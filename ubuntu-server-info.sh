@@ -66,6 +66,35 @@ elif [ $SPEC -eq 5 ] && [ $TOTAL_MEM_MB -lt 16000 ]; then
     echo -e "${YELLOW}The recommendations are still appropriate but monitor memory usage${NC}"
 fi
 
+# Helper function to compare values and return color
+compare_values() {
+    local current="$1"
+    local recommended="$2"
+    
+    # Handle "Not Set" or "N/A" cases
+    if [[ "$current" == "Not Set" || "$recommended" == "N/A" ]]; then
+        echo -e "$YELLOW$current$NC"
+        return
+    fi
+    
+    # Normalize values for comparison (strip units like M, G, etc.)
+    local current_normalized=$(echo "$current" | sed -E 's/([0-9.]+).*/\1/')
+    local recommended_normalized=$(echo "$recommended" | sed -E 's/([0-9.]+).*/\1/')
+    
+    # Get units if they exist
+    local current_unit=$(echo "$current" | sed -E 's/[0-9.]+([^0-9]*)/\1/')
+    local recommended_unit=$(echo "$recommended" | sed -E 's/[0-9.]+([^0-9]*)/\1/')
+    
+    # Special case for On/Off or numeric values
+    if [[ "$current" == "$recommended" ]] || 
+       ([[ "$current_unit" == "$recommended_unit" ]] && 
+        awk "BEGIN {exit !($current_normalized == $recommended_normalized)}"); then
+        echo -e "$GREEN$current$NC"
+    else
+        echo -e "$RED$current$NC"
+    fi
+}
+
 # --- APACHE INFORMATION ---
 echo -e "\n${GREEN}Apache Configuration:${NC}"
 if command -v apache2 &> /dev/null; then
@@ -202,13 +231,14 @@ if command -v apache2 &> /dev/null; then
     
     # Display table for Apache
     echo -e "\n${BLUE}Apache Settings Comparison:${NC}"
-    printf "%-30s %-20s %-20s\n" "Setting" "Current Value" "Recommended Value"
-    printf "%-30s %-20s %-20s\n" "-------" "------------" "-----------------"
+    printf "%-30s %-25s %-20s\n" "Setting" "Current Value" "Recommended Value"
+    printf "%-30s %-25s %-20s\n" "-------" "------------" "-----------------"
     
     for param in StartServers MinSpareThreads MaxSpareThreads ThreadLimit ThreadsPerChild MaxRequestWorkers MaxConnectionsPerChild KeepAlive MaxKeepAliveRequests KeepAliveTimeout; do
         current="${apache_current[$param]:-Not Set}"
         recommended="${apache_recommended[$param]:-N/A}"
-        printf "%-30s %-20s %-20s\n" "$param" "$current" "$recommended"
+        colored_current=$(compare_values "$current" "$recommended")
+        printf "%-30s %-25b %-20s\n" "$param" "$colored_current" "$recommended"
     done
     
 else
@@ -342,13 +372,14 @@ if command -v php &> /dev/null; then
         
         # Display table for PHP-FPM
         echo -e "\n${BLUE}PHP-FPM Settings Comparison:${NC}"
-        printf "%-30s %-20s %-20s\n" "Setting" "Current Value" "Recommended Value"
-        printf "%-30s %-20s %-20s\n" "-------" "------------" "-----------------"
+        printf "%-30s %-25s %-20s\n" "Setting" "Current Value" "Recommended Value"
+        printf "%-30s %-25s %-20s\n" "-------" "------------" "-----------------"
         
         for param in pm pm.max_children pm.start_servers pm.min_spare_servers pm.max_spare_servers pm.max_requests memory_limit upload_max_filesize post_max_size max_execution_time; do
             current="${php_current[$param]:-Not Set}"
             recommended="${php_recommended[$param]:-N/A}"
-            printf "%-30s %-20s %-20s\n" "$param" "$current" "$recommended"
+            colored_current=$(compare_values "$current" "$recommended")
+            printf "%-30s %-25b %-20s\n" "$param" "$colored_current" "$recommended"
         done
         
     else
@@ -466,13 +497,14 @@ if command -v mysql &> /dev/null; then
     
     # Display table for MySQL
     echo -e "\n${BLUE}MySQL/MariaDB Settings Comparison:${NC}"
-    printf "%-30s %-20s %-20s\n" "Setting" "Current Value" "Recommended Value"
-    printf "%-30s %-20s %-20s\n" "-------" "------------" "-----------------"
+    printf "%-30s %-25s %-20s\n" "Setting" "Current Value" "Recommended Value"
+    printf "%-30s %-25s %-20s\n" "-------" "------------" "-----------------"
     
     for param in innodb_buffer_pool_size innodb_log_file_size max_connections table_open_cache query_cache_size query_cache_type key_buffer_size thread_cache_size innodb_flush_method innodb_flush_log_at_trx_commit innodb_read_io_threads innodb_write_io_threads; do
         current="${mysql_current[$param]:-Not Set}"
         recommended="${mysql_recommended[$param]:-N/A}"
-        printf "%-30s %-20s %-20s\n" "$param" "$current" "$recommended"
+        colored_current=$(compare_values "$current" "$recommended")
+        printf "%-30s %-25b %-20s\n" "$param" "$colored_current" "$recommended"
     done
     
 else
