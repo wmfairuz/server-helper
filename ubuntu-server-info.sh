@@ -408,67 +408,166 @@ if command -v mysql &> /dev/null; then
     case $SPEC in
         1)
             mysql_recommended["innodb_buffer_pool_size"]="512M"
+            mysql_recommended["innodb_buffer_pool_instances"]="1"
+            mysql_recommended["innodb_buffer_pool_chunk_size"]="128M"
+            mysql_recommended["innodb_dedicated_server"]="OFF"
             mysql_recommended["innodb_log_file_size"]="64M"
+            mysql_recommended["innodb_redo_log_capacity"]="128M"
             mysql_recommended["max_connections"]="100"
             mysql_recommended["table_open_cache"]="256"
+            mysql_recommended["table_open_cache_instances"]="2"
+            mysql_recommended["open_files_limit"]="1024"
             mysql_recommended["query_cache_size"]="32M"
             mysql_recommended["query_cache_type"]="1"
             mysql_recommended["key_buffer_size"]="32M"
             mysql_recommended["thread_cache_size"]="8"
+            mysql_recommended["innodb_file_per_table"]="1"
+            mysql_recommended["innodb_flush_method"]="O_DIRECT"
+            mysql_recommended["innodb_flush_neighbors"]="1"
+            mysql_recommended["innodb_io_capacity"]="200"
+            mysql_recommended["innodb_io_capacity_max"]="400"
+            mysql_recommended["join_buffer_size"]="128K"
+            mysql_recommended["sort_buffer_size"]="256K"
+            mysql_recommended["read_buffer_size"]="128K"
+            mysql_recommended["read_rnd_buffer_size"]="256K"
+            mysql_recommended["innodb_buffer_pool_dump_at_shutdown"]="1"
+            mysql_recommended["innodb_buffer_pool_load_at_startup"]="1"
             ;;
         2)
             mysql_recommended["innodb_buffer_pool_size"]="768M"
+            mysql_recommended["innodb_buffer_pool_instances"]="1"
+            mysql_recommended["innodb_buffer_pool_chunk_size"]="128M"
+            mysql_recommended["innodb_dedicated_server"]="OFF"
             mysql_recommended["innodb_log_file_size"]="128M"
+            mysql_recommended["innodb_redo_log_capacity"]="256M"
             mysql_recommended["max_connections"]="150"
             mysql_recommended["table_open_cache"]="400"
+            mysql_recommended["table_open_cache_instances"]="2"
+            mysql_recommended["open_files_limit"]="2048"
             mysql_recommended["query_cache_size"]="64M"
             mysql_recommended["query_cache_type"]="1"
             mysql_recommended["key_buffer_size"]="64M"
             mysql_recommended["thread_cache_size"]="16"
+            mysql_recommended["innodb_file_per_table"]="1"
+            mysql_recommended["innodb_flush_method"]="O_DIRECT"
+            mysql_recommended["innodb_flush_neighbors"]="1"
+            mysql_recommended["innodb_io_capacity"]="400"
+            mysql_recommended["innodb_io_capacity_max"]="800"
+            mysql_recommended["join_buffer_size"]="256K"
+            mysql_recommended["sort_buffer_size"]="256K"
+            mysql_recommended["read_buffer_size"]="128K"
+            mysql_recommended["read_rnd_buffer_size"]="256K"
+            mysql_recommended["innodb_buffer_pool_dump_at_shutdown"]="1"
+            mysql_recommended["innodb_buffer_pool_load_at_startup"]="1"
             ;;
         3)
             mysql_recommended["innodb_buffer_pool_size"]="1536M"
+            mysql_recommended["innodb_buffer_pool_instances"]="2"
+            mysql_recommended["innodb_buffer_pool_chunk_size"]="128M"
+            mysql_recommended["innodb_dedicated_server"]="OFF"
             mysql_recommended["innodb_log_file_size"]="256M"
+            mysql_recommended["innodb_redo_log_capacity"]="512M"
             mysql_recommended["max_connections"]="200"
             mysql_recommended["table_open_cache"]="800"
+            mysql_recommended["table_open_cache_instances"]="4"
+            mysql_recommended["open_files_limit"]="4096"
             mysql_recommended["query_cache_size"]="128M"
             mysql_recommended["query_cache_type"]="1"
             mysql_recommended["key_buffer_size"]="128M"
             mysql_recommended["thread_cache_size"]="32"
+            mysql_recommended["innodb_file_per_table"]="1"
+            mysql_recommended["innodb_flush_method"]="O_DIRECT"
+            mysql_recommended["innodb_flush_neighbors"]="0"
+            mysql_recommended["innodb_io_capacity"]="600"
+            mysql_recommended["innodb_io_capacity_max"]="1200"
+            mysql_recommended["join_buffer_size"]="256K"
+            mysql_recommended["sort_buffer_size"]="256K"
+            mysql_recommended["read_buffer_size"]="128K"
+            mysql_recommended["read_rnd_buffer_size"]="256K"
+            mysql_recommended["innodb_buffer_pool_dump_at_shutdown"]="1"
+            mysql_recommended["innodb_buffer_pool_load_at_startup"]="1"
             ;;
         4)
             mysql_recommended["innodb_buffer_pool_size"]="4G"
+            mysql_recommended["innodb_buffer_pool_instances"]="4"
+            mysql_recommended["innodb_buffer_pool_chunk_size"]="128M"
+            mysql_recommended["innodb_dedicated_server"]="OFF"
             mysql_recommended["innodb_log_file_size"]="512M"
-            mysql_recommended["max_connections"]="400"
+            mysql_recommended["innodb_redo_log_capacity"]="1G"
+            mysql_recommended["max_connections"]="300"
             mysql_recommended["table_open_cache"]="1500"
+            mysql_recommended["table_open_cache_instances"]="4"
+            mysql_recommended["open_files_limit"]="8192"
             mysql_recommended["query_cache_size"]="256M"
             mysql_recommended["query_cache_type"]="1"
             mysql_recommended["key_buffer_size"]="256M"
-            mysql_recommended["thread_cache_size"]="64"
+            mysql_recommended["thread_cache_size"]="50"
+            mysql_recommended["innodb_file_per_table"]="1"
             mysql_recommended["innodb_flush_method"]="O_DIRECT"
+            mysql_recommended["innodb_flush_neighbors"]="0"
+            mysql_recommended["innodb_io_capacity"]="800"
+            mysql_recommended["innodb_io_capacity_max"]="1600"
+            mysql_recommended["join_buffer_size"]="256K"
+            mysql_recommended["sort_buffer_size"]="256K"
+            mysql_recommended["read_buffer_size"]="128K"
+            mysql_recommended["read_rnd_buffer_size"]="128K"
+            mysql_recommended["innodb_buffer_pool_dump_at_shutdown"]="1"
+            mysql_recommended["innodb_buffer_pool_load_at_startup"]="1"
             ;;
         5)
             mysql_recommended["innodb_buffer_pool_size"]="10G"
+            mysql_recommended["innodb_buffer_pool_instances"]="8"
+            mysql_recommended["innodb_buffer_pool_chunk_size"]="128M"
+            mysql_recommended["innodb_dedicated_server"]="OFF"
             mysql_recommended["innodb_log_file_size"]="1G"
+            mysql_recommended["innodb_redo_log_capacity"]="2G"
             mysql_recommended["max_connections"]="800"
             mysql_recommended["table_open_cache"]="3000"
+            mysql_recommended["table_open_cache_instances"]="8"
+            mysql_recommended["open_files_limit"]="16384"
             mysql_recommended["query_cache_size"]="512M"
             mysql_recommended["query_cache_type"]="1"
             mysql_recommended["key_buffer_size"]="512M"
             mysql_recommended["thread_cache_size"]="128"
+            mysql_recommended["innodb_file_per_table"]="1"
             mysql_recommended["innodb_flush_method"]="O_DIRECT"
+            mysql_recommended["innodb_flush_neighbors"]="0"
+            mysql_recommended["innodb_io_capacity"]="1000"
+            mysql_recommended["innodb_io_capacity_max"]="2000"
+            mysql_recommended["join_buffer_size"]="512K"
+            mysql_recommended["sort_buffer_size"]="1M"
+            mysql_recommended["read_buffer_size"]="256K"
+            mysql_recommended["read_rnd_buffer_size"]="512K"
+            mysql_recommended["innodb_buffer_pool_dump_at_shutdown"]="1"
+            mysql_recommended["innodb_buffer_pool_load_at_startup"]="1"
             mysql_recommended["innodb_flush_log_at_trx_commit"]="2"
             ;;
         6)
             mysql_recommended["innodb_buffer_pool_size"]="20G"
+            mysql_recommended["innodb_buffer_pool_instances"]="16"
+            mysql_recommended["innodb_buffer_pool_chunk_size"]="128M"
+            mysql_recommended["innodb_dedicated_server"]="OFF"
             mysql_recommended["innodb_log_file_size"]="2G"
+            mysql_recommended["innodb_redo_log_capacity"]="4G"
             mysql_recommended["max_connections"]="1500"
             mysql_recommended["table_open_cache"]="6000"
+            mysql_recommended["table_open_cache_instances"]="16"
+            mysql_recommended["open_files_limit"]="32768"
             mysql_recommended["query_cache_size"]="0"
             mysql_recommended["query_cache_type"]="0"
             mysql_recommended["key_buffer_size"]="1G"
             mysql_recommended["thread_cache_size"]="256"
+            mysql_recommended["innodb_file_per_table"]="1"
             mysql_recommended["innodb_flush_method"]="O_DIRECT"
+            mysql_recommended["innodb_flush_neighbors"]="0"
+            mysql_recommended["innodb_io_capacity"]="2000"
+            mysql_recommended["innodb_io_capacity_max"]="4000"
+            mysql_recommended["join_buffer_size"]="1M"
+            mysql_recommended["sort_buffer_size"]="2M"
+            mysql_recommended["read_buffer_size"]="512K"
+            mysql_recommended["read_rnd_buffer_size"]="1M"
+            mysql_recommended["innodb_buffer_pool_dump_at_shutdown"]="1"
+            mysql_recommended["innodb_buffer_pool_load_at_startup"]="1"
             mysql_recommended["innodb_flush_log_at_trx_commit"]="2"
             mysql_recommended["innodb_read_io_threads"]="8"
             mysql_recommended["innodb_write_io_threads"]="8"
@@ -486,7 +585,7 @@ if command -v mysql &> /dev/null; then
                 [[ "$line" =~ ^[[:space:]]*# ]] && continue
                 [[ -z "$line" ]] && continue
                 
-                for param in innodb_buffer_pool_size innodb_buffer_pool_instances innodb_buffer_pool_chunk_size innodb_log_file_size max_connections table_open_cache table_open_cache_instances open_files_limit query_cache_size query_cache_type key_buffer_size thread_cache_size innodb_file_per_table innodb_flush_method innodb_flush_neighbors innodb_io_capacity innodb_io_capacity_max innodb_flush_log_at_trx_commit innodb_read_io_threads innodb_write_io_threads innodb_buffer_pool_dump_at_shutdown innodb_buffer_pool_load_at_startup join_buffer_size sort_buffer_size read_buffer_size read_rnd_buffer_size; do
+                for param in innodb_buffer_pool_size innodb_buffer_pool_instances innodb_buffer_pool_chunk_size innodb_dedicated_server innodb_log_file_size innodb_redo_log_capacity max_connections table_open_cache table_open_cache_instances open_files_limit query_cache_size query_cache_type key_buffer_size thread_cache_size innodb_file_per_table innodb_flush_method innodb_flush_neighbors innodb_io_capacity innodb_io_capacity_max innodb_flush_log_at_trx_commit innodb_read_io_threads innodb_write_io_threads innodb_buffer_pool_dump_at_shutdown innodb_buffer_pool_load_at_startup join_buffer_size sort_buffer_size read_buffer_size read_rnd_buffer_size; do
                     if [[ "$line" =~ ^$param[[:space:]]*=[[:space:]]*(.+) ]]; then
                         mysql_current["$param"]="${BASH_REMATCH[1]}"
                     fi
@@ -495,61 +594,103 @@ if command -v mysql &> /dev/null; then
         fi
     done
     
-    # Display table for MySQL
+    # Display table for MySQL main settings
     echo -e "\n${BLUE}MySQL/MariaDB Settings Comparison:${NC}"
     echo "Setting                         Current Value              Recommended Value"
     echo "-------                         ------------              -----------------"
     
-    for param in innodb_buffer_pool_size innodb_log_file_size max_connections table_open_cache query_cache_size query_cache_type key_buffer_size thread_cache_size innodb_flush_method innodb_flush_log_at_trx_commit innodb_read_io_threads innodb_write_io_threads; do
+    mysql_main_params=(
+        "innodb_buffer_pool_size"
+        "innodb_log_file_size"
+        "innodb_redo_log_capacity"
+        "max_connections"
+        "table_open_cache"
+        "query_cache_size"
+        "query_cache_type"
+        "key_buffer_size"
+        "thread_cache_size"
+        "innodb_flush_method"
+        "innodb_flush_log_at_trx_commit"
+    )
+    
+    for param in "${mysql_main_params[@]}"; do
         current="${mysql_current[$param]:-Not Set}"
         recommended="${mysql_recommended[$param]:-N/A}"
         colored_current=$(compare_values "$current" "$recommended")
         printf "%-30s %-30b %-20s\n" "$param" "$colored_current" "$recommended"
     done
     
-    # Additional MySQL settings table
-    echo -e "\n${BLUE}MySQL/MariaDB Additional Settings:${NC}"
+    # Display table for MySQL buffer/pool settings
+    echo -e "\n${BLUE}MySQL/MariaDB Buffer Pool Settings:${NC}"
     echo "Setting                         Current Value              Recommended Value"
     echo "-------                         ------------              -----------------"
     
-    additional_params=(
-      "innodb_buffer_pool_instances"
-      "innodb_buffer_pool_chunk_size"
-      "table_open_cache_instances"
-      "open_files_limit"
-      "innodb_file_per_table"
-      "innodb_flush_neighbors"
-      "innodb_io_capacity"
-      "innodb_io_capacity_max"
-      "innodb_buffer_pool_dump_at_shutdown"
-      "innodb_buffer_pool_load_at_startup"
-      "join_buffer_size"
-      "sort_buffer_size"
-      "read_buffer_size"
-      "read_rnd_buffer_size"
+    mysql_buffer_params=(
+        "innodb_buffer_pool_instances"
+        "innodb_buffer_pool_chunk_size"
+        "innodb_dedicated_server"
+        "innodb_buffer_pool_dump_at_shutdown"
+        "innodb_buffer_pool_load_at_startup"
     )
     
-    # Add recommended values for additional parameters based on spec
-    case $SPEC in
-        5)
-            mysql_recommended["innodb_buffer_pool_instances"]="8"
-            mysql_recommended["innodb_buffer_pool_chunk_size"]="128M"
-            mysql_recommended["table_open_cache_instances"]="8"
-            mysql_recommended["open_files_limit"]="16384"
-            mysql_recommended["innodb_file_per_table"]="1"
-            mysql_recommended["innodb_flush_neighbors"]="0"
-            mysql_recommended["innodb_io_capacity"]="1000"
-            mysql_recommended["innodb_io_capacity_max"]="2000"
-            mysql_recommended["innodb_buffer_pool_dump_at_shutdown"]="1"
-            mysql_recommended["innodb_buffer_pool_load_at_startup"]="1"
-            mysql_recommended["join_buffer_size"]="512K"
-            mysql_recommended["sort_buffer_size"]="1M"
-            mysql_recommended["read_buffer_size"]="256K"
-            mysql_recommended["read_rnd_buffer_size"]="512K"
-            ;;
-    esac
+    for param in "${mysql_buffer_params[@]}"; do
+        current="${mysql_current[$param]:-Not Set}"
+        recommended="${mysql_recommended[$param]:-N/A}"
+        colored_current=$(compare_values "$current" "$recommended")
+        printf "%-30s %-30b %-20s\n" "$param" "$colored_current" "$recommended"
+    done
     
-    for param in "${additional_params[@]}"; do
+    # Display table for MySQL system resource settings
+    echo -e "\n${BLUE}MySQL/MariaDB System Resource Settings:${NC}"
+    echo "Setting                         Current Value              Recommended Value"
+    echo "-------                         ------------              -----------------"
+    
+    mysql_resource_params=(
+        "open_files_limit"
+        "table_open_cache_instances"
+    )
+    
+    for param in "${mysql_resource_params[@]}"; do
+        current="${mysql_current[$param]:-Not Set}"
+        recommended="${mysql_recommended[$param]:-N/A}"
+        colored_current=$(compare_values "$current" "$recommended")
+        printf "%-30s %-30b %-20s\n" "$param" "$colored_current" "$recommended"
+    done
+    
+    # Display table for MySQL InnoDB settings
+    echo -e "\n${BLUE}MySQL/MariaDB InnoDB Settings:${NC}"
+    echo "Setting                         Current Value              Recommended Value"
+    echo "-------                         ------------              -----------------"
+    
+    mysql_innodb_params=(
+        "innodb_file_per_table"
+        "innodb_flush_neighbors"
+        "innodb_io_capacity"
+        "innodb_io_capacity_max"
+        "innodb_read_io_threads"
+        "innodb_write_io_threads"
+    )
+    
+    for param in "${mysql_innodb_params[@]}"; do
+        current="${mysql_current[$param]:-Not Set}"
+        recommended="${mysql_recommended[$param]:-N/A}"
+        colored_current=$(compare_values "$current" "$recommended")
+        printf "%-30s %-30b %-20s\n" "$param" "$colored_current" "$recommended"
+    done
+    
+    # Display table for MySQL memory settings
+    echo -e "\n${BLUE}MySQL/MariaDB Memory Settings:${NC}"
+    echo "Setting                         Current Value              Recommended Value"
+    echo "-------                         ------------              -----------------"
+    
+    mysql_memory_params=(
+        "join_buffer_size"
+        "sort_buffer_size"
+        "read_buffer_size"
+        "read_rnd_buffer_size"
+    )
+    
+    for param in "${mysql_memory_params[@]}"; do
         current="${mysql_current[$param]:-Not Set}"
         recommended="${mysql_recommended[$param]:-N/A}"
         colored_current=$(compare_values "$current" "$recommended")
