@@ -231,14 +231,14 @@ if command -v apache2 &> /dev/null; then
     
     # Display table for Apache
     echo -e "\n${BLUE}Apache Settings Comparison:${NC}"
-    printf "%-30s %-25s %-20s\n" "Setting" "Current Value" "Recommended Value"
-    printf "%-30s %-25s %-20s\n" "-------" "------------" "-----------------"
+    echo "Setting                         Current Value              Recommended Value"
+    echo "-------                         ------------              -----------------"
     
     for param in StartServers MinSpareThreads MaxSpareThreads ThreadLimit ThreadsPerChild MaxRequestWorkers MaxConnectionsPerChild KeepAlive MaxKeepAliveRequests KeepAliveTimeout; do
         current="${apache_current[$param]:-Not Set}"
         recommended="${apache_recommended[$param]:-N/A}"
         colored_current=$(compare_values "$current" "$recommended")
-        printf "%-30s %-25b %-20s\n" "$param" "$colored_current" "$recommended"
+        printf "%-30s %-30b %-20s\n" "$param" "$colored_current" "$recommended"
     done
     
 else
@@ -372,14 +372,14 @@ if command -v php &> /dev/null; then
         
         # Display table for PHP-FPM
         echo -e "\n${BLUE}PHP-FPM Settings Comparison:${NC}"
-        printf "%-30s %-25s %-20s\n" "Setting" "Current Value" "Recommended Value"
-        printf "%-30s %-25s %-20s\n" "-------" "------------" "-----------------"
+        echo "Setting                         Current Value              Recommended Value"
+        echo "-------                         ------------              -----------------"
         
         for param in pm pm.max_children pm.start_servers pm.min_spare_servers pm.max_spare_servers pm.max_requests memory_limit upload_max_filesize post_max_size max_execution_time; do
             current="${php_current[$param]:-Not Set}"
             recommended="${php_recommended[$param]:-N/A}"
             colored_current=$(compare_values "$current" "$recommended")
-            printf "%-30s %-25b %-20s\n" "$param" "$colored_current" "$recommended"
+            printf "%-30s %-30b %-20s\n" "$param" "$colored_current" "$recommended"
         done
         
     else
@@ -486,7 +486,7 @@ if command -v mysql &> /dev/null; then
                 [[ "$line" =~ ^[[:space:]]*# ]] && continue
                 [[ -z "$line" ]] && continue
                 
-                for param in innodb_buffer_pool_size innodb_log_file_size max_connections table_open_cache query_cache_size query_cache_type key_buffer_size thread_cache_size innodb_flush_method innodb_flush_log_at_trx_commit innodb_read_io_threads innodb_write_io_threads; do
+                for param in innodb_buffer_pool_size innodb_buffer_pool_instances innodb_buffer_pool_chunk_size innodb_log_file_size max_connections table_open_cache table_open_cache_instances open_files_limit query_cache_size query_cache_type key_buffer_size thread_cache_size innodb_file_per_table innodb_flush_method innodb_flush_neighbors innodb_io_capacity innodb_io_capacity_max innodb_flush_log_at_trx_commit innodb_read_io_threads innodb_write_io_threads innodb_buffer_pool_dump_at_shutdown innodb_buffer_pool_load_at_startup join_buffer_size sort_buffer_size read_buffer_size read_rnd_buffer_size; do
                     if [[ "$line" =~ ^$param[[:space:]]*=[[:space:]]*(.+) ]]; then
                         mysql_current["$param"]="${BASH_REMATCH[1]}"
                     fi
@@ -497,14 +497,63 @@ if command -v mysql &> /dev/null; then
     
     # Display table for MySQL
     echo -e "\n${BLUE}MySQL/MariaDB Settings Comparison:${NC}"
-    printf "%-30s %-25s %-20s\n" "Setting" "Current Value" "Recommended Value"
-    printf "%-30s %-25s %-20s\n" "-------" "------------" "-----------------"
+    echo "Setting                         Current Value              Recommended Value"
+    echo "-------                         ------------              -----------------"
     
     for param in innodb_buffer_pool_size innodb_log_file_size max_connections table_open_cache query_cache_size query_cache_type key_buffer_size thread_cache_size innodb_flush_method innodb_flush_log_at_trx_commit innodb_read_io_threads innodb_write_io_threads; do
         current="${mysql_current[$param]:-Not Set}"
         recommended="${mysql_recommended[$param]:-N/A}"
         colored_current=$(compare_values "$current" "$recommended")
-        printf "%-30s %-25b %-20s\n" "$param" "$colored_current" "$recommended"
+        printf "%-30s %-30b %-20s\n" "$param" "$colored_current" "$recommended"
+    done
+    
+    # Additional MySQL settings table
+    echo -e "\n${BLUE}MySQL/MariaDB Additional Settings:${NC}"
+    echo "Setting                         Current Value              Recommended Value"
+    echo "-------                         ------------              -----------------"
+    
+    additional_params=(
+      "innodb_buffer_pool_instances"
+      "innodb_buffer_pool_chunk_size"
+      "table_open_cache_instances"
+      "open_files_limit"
+      "innodb_file_per_table"
+      "innodb_flush_neighbors"
+      "innodb_io_capacity"
+      "innodb_io_capacity_max"
+      "innodb_buffer_pool_dump_at_shutdown"
+      "innodb_buffer_pool_load_at_startup"
+      "join_buffer_size"
+      "sort_buffer_size"
+      "read_buffer_size"
+      "read_rnd_buffer_size"
+    )
+    
+    # Add recommended values for additional parameters based on spec
+    case $SPEC in
+        5)
+            mysql_recommended["innodb_buffer_pool_instances"]="8"
+            mysql_recommended["innodb_buffer_pool_chunk_size"]="128M"
+            mysql_recommended["table_open_cache_instances"]="8"
+            mysql_recommended["open_files_limit"]="16384"
+            mysql_recommended["innodb_file_per_table"]="1"
+            mysql_recommended["innodb_flush_neighbors"]="0"
+            mysql_recommended["innodb_io_capacity"]="1000"
+            mysql_recommended["innodb_io_capacity_max"]="2000"
+            mysql_recommended["innodb_buffer_pool_dump_at_shutdown"]="1"
+            mysql_recommended["innodb_buffer_pool_load_at_startup"]="1"
+            mysql_recommended["join_buffer_size"]="512K"
+            mysql_recommended["sort_buffer_size"]="1M"
+            mysql_recommended["read_buffer_size"]="256K"
+            mysql_recommended["read_rnd_buffer_size"]="512K"
+            ;;
+    esac
+    
+    for param in "${additional_params[@]}"; do
+        current="${mysql_current[$param]:-Not Set}"
+        recommended="${mysql_recommended[$param]:-N/A}"
+        colored_current=$(compare_values "$current" "$recommended")
+        printf "%-30s %-30b %-20s\n" "$param" "$colored_current" "$recommended"
     done
     
 else
