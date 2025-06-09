@@ -209,19 +209,6 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
             fi
             echo
             
-            # Handle wildcard domains - ask user for preference
-            if [[ "$selected_domain" == "*."* ]]; then
-                echo "Detected potential wildcard domain: $selected_domain"
-                echo "1. Use as-is: $selected_domain"
-                echo "2. Use wildcard format: *.${selected_domain#*.}"
-                read -p "Choose format (1-2): " domain_choice
-                
-                if [ "$domain_choice" = "2" ]; then
-                    selected_domain="*.${selected_domain#*.}"
-                fi
-                echo
-            fi
-            
             # Your custom renewal command with configurable email
             renewal_cmd="certbot certonly --manual --preferred-challenges=dns --server https://acme-v02.api.letsencrypt.org/directory --agree-tos --email $current_email -d $selected_domain"
             
