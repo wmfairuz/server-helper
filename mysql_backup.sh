@@ -6,8 +6,8 @@
 set -e  # Exit on any error
 
 # Default paths
-DEFAULT_PROJECT_DIR="/opt/www/vetpn9"
-DEFAULT_BACKUP_DIR="/home/vetpn9"
+DEFAULT_PROJECT_DIR="./"
+DEFAULT_BACKUP_DIR="./"
 
 # Colors for output
 RED='\033[0;31m'
