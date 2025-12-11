@@ -116,11 +116,19 @@ toggle_instance() {
     fi
 }
 
-# Find all Laravel instances
+# Find all Laravel instances (searches up to 2 levels deep)
 find_laravel_instances() {
     local instances=()
 
+    # Search in immediate subdirectories
     for dir in "$LARAVEL_ROOT"/*/; do
+        if [[ -f "${dir}artisan" ]]; then
+            instances+=("${dir%/}")
+        fi
+    done
+
+    # Search in nested subdirectories (e.g., es-instances/*)
+    for dir in "$LARAVEL_ROOT"/*/*/; do
         if [[ -f "${dir}artisan" ]]; then
             instances+=("${dir%/}")
         fi
