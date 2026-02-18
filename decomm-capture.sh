@@ -6,8 +6,10 @@
 # Usage:
 #   sudo bash decomm-capture.sh /var/www/myapp
 #   sudo bash decomm-capture.sh /var/www/myapp1 /var/www/myapp2
+#   sudo bash decomm-capture.sh -o /mnt/backup/decomm /var/www/myapp
 #
-# Output: Creates ~/decomm/<app-name>_<timestamp>/ with all captured data
+# Output: Creates <output-dir>/<app-name>_<timestamp>/ with all captured data
+#         Default output dir: ~/decomm
 ###############################################################################
 
 set -euo pipefail
@@ -21,13 +23,22 @@ log()  { echo -e "${GREEN}[✓]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[✗]${NC} $1"; }
 
-if [ $# -eq 0 ]; then
-    echo "Usage: sudo bash $0 /path/to/laravel-app [/path/to/another-app ...]"
-    exit 1
-fi
-
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BASE_OUTPUT="$HOME/decomm"
+
+while getopts ":o:" opt; do
+    case "$opt" in
+        o) BASE_OUTPUT="$OPTARG" ;;
+        :) err "Option -$OPTARG requires an argument."; exit 1 ;;
+        \?) err "Unknown option: -$OPTARG"; exit 1 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+if [ $# -eq 0 ]; then
+    echo "Usage: sudo bash $0 [-o /output/dir] /path/to/laravel-app [/path/to/another-app ...]"
+    exit 1
+fi
 mkdir -p "$BASE_OUTPUT"
 
 # ─── Server-wide info (captured once) ────────────────────────────────────────
