@@ -340,7 +340,7 @@ capture_app() {
     fi
 
     # ── 9. App directory archive ─────────────────────────────────────────────
-    log "Archiving app directory (excluding vendor, node_modules)..."
+    log "Archiving app directory..."
     tar czf "$OUTPUT_DIR/${APP_NAME}_app.tar.gz" \
         -C "$(dirname "$APP_PATH")" \
         "$APP_NAME" 2>/dev/null
