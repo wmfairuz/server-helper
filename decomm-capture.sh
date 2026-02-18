@@ -328,12 +328,25 @@ capture_app() {
         fi
     fi
 
-    # ── 9. Composer lock & json ──────────────────────────────────────────────
+    # ── 9. App directory archive ─────────────────────────────────────────────
+    log "Archiving app directory (excluding vendor, node_modules)..."
+    tar czf "$OUTPUT_DIR/${APP_NAME}_app.tar.gz" \
+        -C "$(dirname "$APP_PATH")" \
+        "$APP_NAME" 2>/dev/null
+
+    if [ -s "$OUTPUT_DIR/${APP_NAME}_app.tar.gz" ]; then
+        log "App archived: ${APP_NAME}_app.tar.gz ($(du -h "$OUTPUT_DIR/${APP_NAME}_app.tar.gz" | cut -f1))"
+    else
+        err "App archive failed"
+        rm -f "$OUTPUT_DIR/${APP_NAME}_app.tar.gz"
+    fi
+
+    # ── 10. Composer lock & json ─────────────────────────────────────────────
     log "Capturing composer files..."
     [ -f "$APP_PATH/composer.json" ] && cp "$APP_PATH/composer.json" "$OUTPUT_DIR/"
     [ -f "$APP_PATH/composer.lock" ] && cp "$APP_PATH/composer.lock" "$OUTPUT_DIR/"
 
-    # ── 10. Cron entries for this app ────────────────────────────────────────
+    # ── 11. Cron entries for this app ────────────────────────────────────────
     log "Capturing cron entries for this app..."
     {
         grep -r "$APP_PATH\|$APP_NAME" /etc/cron* /var/spool/cron 2>/dev/null || echo "No cron entries found"
@@ -342,11 +355,11 @@ capture_app() {
         cd "$APP_PATH" && php artisan schedule:list 2>/dev/null || echo "Could not run schedule:list"
     } > "$OUTPUT_DIR/cron_entries.txt"
 
-    # ── 11. Queue & Horizon config ───────────────────────────────────────────
+    # ── 12. Queue & Horizon config ───────────────────────────────────────────
     [ -f "$APP_PATH/config/queue.php" ] && cp "$APP_PATH/config/queue.php" "$OUTPUT_DIR/" 2>/dev/null || true
     [ -f "$APP_PATH/config/horizon.php" ] && cp "$APP_PATH/config/horizon.php" "$OUTPUT_DIR/" 2>/dev/null || true
 
-    # ── 12. Laravel version & route list ─────────────────────────────────────
+    # ── 13. Laravel version & route list ─────────────────────────────────────
     log "Capturing Laravel info..."
     {
         echo "=== Laravel Version ==="
@@ -356,7 +369,7 @@ capture_app() {
         (cd "$APP_PATH" && php artisan route:list --compact 2>/dev/null | wc -l) || echo "N/A"
     } > "$OUTPUT_DIR/laravel_info.txt"
 
-    # ── 13. Node / NPM assets ────────────────────────────────────────────────
+    # ── 14. Node / NPM assets ────────────────────────────────────────────────
     if [ -f "$APP_PATH/package.json" ]; then
         log "Capturing package.json..."
         cp "$APP_PATH/package.json" "$OUTPUT_DIR/"
