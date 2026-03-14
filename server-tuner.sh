@@ -16,6 +16,7 @@ NC='\033[0m'
 BACKUP_DIR="/opt/config-backups/$(date +%Y%m%d-%H%M%S)"
 CHANGES=()
 DRY_RUN=false
+ONLY=""
 
 # ─── Helpers ────────────────────────────────────────────────────────
 info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -596,7 +597,33 @@ apply_laravel() {
 # MAIN
 # ═══════════════════════════════════════════════════════════════════
 
+show_usage() {
+    echo "Usage: sudo $0 [--only <section>]"
+    echo ""
+    echo "Sections: phpfpm, nginx, mysql, opcache, limits, laravel"
+    echo "Example:  sudo $0 --only mysql"
+}
+
 main() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --only)
+                ONLY="$2"
+                shift 2
+                ;;
+            --help|-h)
+                show_usage
+                exit 0
+                ;;
+            *)
+                bad "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+
     echo -e "${BOLD}${CYAN}"
     echo "╔═══════════════════════════════════════════════╗"
     echo "║       SERVER PERFORMANCE TUNER               ║"
@@ -611,14 +638,18 @@ main() {
         exit 1
     fi
 
+    if [[ -n "$ONLY" ]]; then
+        info "Running only: $ONLY"
+    fi
+
     # ── Audit Phase ──
     gather_info
-    check_phpfpm
-    check_nginx
-    check_mysql
-    check_opcache
-    check_limits
-    check_laravel
+    [[ -z "$ONLY" || "$ONLY" == "phpfpm" ]]  && check_phpfpm
+    [[ -z "$ONLY" || "$ONLY" == "nginx" ]]   && check_nginx
+    [[ -z "$ONLY" || "$ONLY" == "mysql" ]]   && check_mysql
+    [[ -z "$ONLY" || "$ONLY" == "opcache" ]] && check_opcache
+    [[ -z "$ONLY" || "$ONLY" == "limits" ]]  && check_limits
+    [[ -z "$ONLY" || "$ONLY" == "laravel" ]] && check_laravel
 
     # ── Summary ──
     header "Summary"
