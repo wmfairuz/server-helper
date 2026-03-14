@@ -404,8 +404,11 @@ apply_phpfpm() {
 
     ok "PHP-FPM config updated"
     info "Restarting PHP-FPM..."
-    systemctl restart "php${PHP_VERSION}-fpm"
-    ok "PHP-FPM restarted"
+    if systemctl restart "php${PHP_VERSION}-fpm"; then
+        ok "PHP-FPM restarted"
+    else
+        bad "Failed to restart PHP-FPM. Check: systemctl status php${PHP_VERSION}-fpm"
+    fi
 }
 
 apply_nginx() {
@@ -465,11 +468,29 @@ apply_mysql() {
 
     ok "MySQL config updated"
     warn "MySQL requires restart to apply changes"
-    if confirm "Restart MySQL now?"; then
-        systemctl restart mysql
-        ok "MySQL restarted"
+
+    # Detect the correct service name
+    MYSQL_SVC=""
+    for svc in mysql mariadb mysqld; do
+        if systemctl list-unit-files "${svc}.service" &>/dev/null && systemctl list-unit-files "${svc}.service" | grep -q "$svc"; then
+            MYSQL_SVC="$svc"
+            break
+        fi
+    done
+
+    if [[ -z "$MYSQL_SVC" ]]; then
+        warn "Could not detect MySQL service name. Restart manually."
+        return
+    fi
+
+    if confirm "Restart $MYSQL_SVC now?"; then
+        if systemctl restart "$MYSQL_SVC"; then
+            ok "$MYSQL_SVC restarted"
+        else
+            bad "Failed to restart $MYSQL_SVC. Check: systemctl status $MYSQL_SVC"
+        fi
     else
-        warn "Remember to restart MySQL later: systemctl restart mysql"
+        warn "Remember to restart later: systemctl restart $MYSQL_SVC"
     fi
 }
 
