@@ -319,11 +319,19 @@ check_limits() {
     echo -e "  Open files (soft): ${BOLD}$NOFILE_SOFT${NC}"
     echo -e "  Open files (hard): ${BOLD}$NOFILE_HARD${NC}"
 
+    # Check if limits.conf already has the setting (survives reboot, but not reflected in current shell)
+    LIMITS_ALREADY_SET=false
+    if grep -qE "www-data\s+(soft|hard)\s+nofile\s+65535" /etc/security/limits.conf 2>/dev/null; then
+        LIMITS_ALREADY_SET=true
+    fi
+
     echo ""
-    if [[ "$NOFILE_SOFT" -lt 65535 ]]; then
+    if [[ "$NOFILE_SOFT" -lt 65535 ]] && ! $LIMITS_ALREADY_SET; then
         bad "Open file limit ($NOFILE_SOFT) is too low"
         echo -e "  ${GREEN}Recommended: 65535${NC}"
         add_change "limits"
+    elif $LIMITS_ALREADY_SET && [[ "$NOFILE_SOFT" -lt 65535 ]]; then
+        ok "File limits configured in limits.conf (will apply on next login/restart)"
     else
         ok "Open file limits look good"
     fi
