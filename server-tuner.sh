@@ -196,6 +196,12 @@ check_nginx() {
 check_mysql() {
     header "MySQL"
 
+    # Check if MySQL/MariaDB is running locally
+    MYSQL_LOCAL=false
+    if pgrep -x "mysqld|mariadbd|mariadb" &>/dev/null; then
+        MYSQL_LOCAL=true
+    fi
+
     if ! command -v mysql &>/dev/null; then
         warn "MySQL client not found"
         return
@@ -204,12 +210,16 @@ check_mysql() {
     MAX_CONN=$(mysql -N -e "SHOW VARIABLES LIKE 'max_connections'" 2>/dev/null | awk '{print $2}' || echo "0")
     INNODB_POOL=$(mysql -N -e "SHOW VARIABLES LIKE 'innodb_buffer_pool_size'" 2>/dev/null | awk '{print $2}' || echo "0")
     INNODB_POOL_MB=$((INNODB_POOL / 1024 / 1024))
-    QUERY_CACHE=$(mysql -N -e "SHOW VARIABLES LIKE 'query_cache_type'" 2>/dev/null | awk '{print $2}' || echo "N/A")
     SLOW_QUERY=$(mysql -N -e "SHOW VARIABLES LIKE 'slow_query_log'" 2>/dev/null | awk '{print $2}' || echo "N/A")
 
     echo -e "  max_connections = ${BOLD}$MAX_CONN${NC}"
     echo -e "  innodb_buffer_pool_size = ${BOLD}${INNODB_POOL_MB} MB${NC}"
     echo -e "  slow_query_log = ${SLOW_QUERY:-not set}"
+
+    if ! $MYSQL_LOCAL; then
+        info "MySQL is not running locally (remote DB server)"
+        echo -e "  ${YELLOW}Tuning recommendations are shown but must be applied on the DB server${NC}"
+    fi
 
     # Recommend ~25% of total RAM for InnoDB buffer pool
     REC_INNODB_MB=$((TOTAL_MEM_MB / 4))
@@ -217,14 +227,16 @@ check_mysql() {
     REC_MAX_CONN=200
     MYSQL_NEEDS_TUNING=false
 
-    # Find MySQL config file
+    # Find MySQL config file (only relevant if local)
     MYSQL_CONF=""
-    for f in /etc/mysql/mysql.conf.d/mysqld.cnf /etc/mysql/my.cnf /etc/my.cnf; do
-        if [[ -f "$f" ]]; then
-            MYSQL_CONF="$f"
-            break
-        fi
-    done
+    if $MYSQL_LOCAL; then
+        for f in /etc/mysql/mysql.conf.d/mysqld.cnf /etc/mysql/my.cnf /etc/my.cnf; do
+            if [[ -f "$f" ]]; then
+                MYSQL_CONF="$f"
+                break
+            fi
+        done
+    fi
 
     echo ""
     if [[ "$INNODB_POOL_MB" -lt "$REC_INNODB_MB" ]]; then
@@ -243,11 +255,14 @@ check_mysql() {
         ok "max_connections ($MAX_CONN) looks good"
     fi
 
-    if $MYSQL_NEEDS_TUNING; then
+    # Only offer to apply changes if MySQL is local
+    if $MYSQL_NEEDS_TUNING && $MYSQL_LOCAL; then
         add_change "mysql"
+    elif $MYSQL_NEEDS_TUNING; then
+        warn "Apply these changes on the remote DB server"
     fi
 
-    export MYSQL_CONF REC_INNODB_MB REC_MAX_CONN
+    export MYSQL_CONF MYSQL_LOCAL REC_INNODB_MB REC_MAX_CONN
 }
 
 # ─── PHP OPcache ───────────────────────────────────────────────────
