@@ -41,6 +41,10 @@ backup_file() {
 }
 
 add_change() {
+    # Avoid duplicates
+    for existing in "${CHANGES[@]+"${CHANGES[@]}"}"; do
+        [[ "$existing" == "$1" ]] && return
+    done
     CHANGES+=("$1")
 }
 
