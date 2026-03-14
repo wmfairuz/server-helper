@@ -3,7 +3,7 @@
 # Server Performance Tuner for Laravel + Nginx + PHP-FPM + MySQL
 # Audits current config, proposes optimizations, applies with backup
 
-set -euo pipefail
+set -uo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -88,7 +88,7 @@ check_phpfpm() {
     PM_START=$(grep -E "^pm\.start_servers" "$FPM_CONF" | awk '{print $3}')
     PM_MIN_SPARE=$(grep -E "^pm\.min_spare_servers" "$FPM_CONF" | awk '{print $3}')
     PM_MAX_SPARE=$(grep -E "^pm\.max_spare_servers" "$FPM_CONF" | awk '{print $3}')
-    PM_MAX_REQ=$(grep -E "^pm\.max_requests" "$FPM_CONF" | awk '{print $3}' || echo "0")
+    PM_MAX_REQ=$(grep -E "^pm\.max_requests" "$FPM_CONF" 2>/dev/null | awk '{print $3}' || echo "0")
 
     echo -e "  pm = $PM_MODE"
     echo -e "  pm.max_children = ${BOLD}$PM_MAX${NC}"
@@ -146,11 +146,11 @@ check_nginx() {
         return
     fi
 
-    WORKER_PROC=$(grep -E "^worker_processes" "$NGINX_CONF" | awk '{print $2}' | tr -d ';')
-    WORKER_CONN=$(grep "worker_connections" "$NGINX_CONF" | awk '{print $2}' | tr -d ';')
-    MULTI_ACCEPT=$(grep "multi_accept" "$NGINX_CONF" | grep -v "#" | awk '{print $2}' | tr -d ';')
-    GZIP_ON=$(grep -E "^\s*gzip\s+on" "$NGINX_CONF" || true)
-    SERVER_TOKENS=$(grep -E "^\s*server_tokens" "$NGINX_CONF" | grep -v "#" || true)
+    WORKER_PROC=$(grep -E "^worker_processes" "$NGINX_CONF" 2>/dev/null | awk '{print $2}' | tr -d ';' || echo "auto")
+    WORKER_CONN=$(grep "worker_connections" "$NGINX_CONF" 2>/dev/null | awk '{print $2}' | tr -d ';' || echo "0")
+    MULTI_ACCEPT=$(grep "multi_accept" "$NGINX_CONF" 2>/dev/null | grep -v "#" | awk '{print $2}' | tr -d ';' || echo "")
+    GZIP_ON=$(grep -E "^\s*gzip\s+on" "$NGINX_CONF" 2>/dev/null || echo "")
+    SERVER_TOKENS=$(grep -E "^\s*server_tokens" "$NGINX_CONF" 2>/dev/null | grep -v "#" || echo "")
 
     echo -e "  Config: $NGINX_CONF"
     echo -e "  worker_processes = $WORKER_PROC"
@@ -197,11 +197,11 @@ check_mysql() {
         return
     fi
 
-    MAX_CONN=$(mysql -N -e "SHOW VARIABLES LIKE 'max_connections'" 2>/dev/null | awk '{print $2}')
-    INNODB_POOL=$(mysql -N -e "SHOW VARIABLES LIKE 'innodb_buffer_pool_size'" 2>/dev/null | awk '{print $2}')
+    MAX_CONN=$(mysql -N -e "SHOW VARIABLES LIKE 'max_connections'" 2>/dev/null | awk '{print $2}' || echo "0")
+    INNODB_POOL=$(mysql -N -e "SHOW VARIABLES LIKE 'innodb_buffer_pool_size'" 2>/dev/null | awk '{print $2}' || echo "0")
     INNODB_POOL_MB=$((INNODB_POOL / 1024 / 1024))
     QUERY_CACHE=$(mysql -N -e "SHOW VARIABLES LIKE 'query_cache_type'" 2>/dev/null | awk '{print $2}' || echo "N/A")
-    SLOW_QUERY=$(mysql -N -e "SHOW VARIABLES LIKE 'slow_query_log'" 2>/dev/null | awk '{print $2}')
+    SLOW_QUERY=$(mysql -N -e "SHOW VARIABLES LIKE 'slow_query_log'" 2>/dev/null | awk '{print $2}' || echo "N/A")
 
     echo -e "  max_connections = ${BOLD}$MAX_CONN${NC}"
     echo -e "  innodb_buffer_pool_size = ${BOLD}${INNODB_POOL_MB} MB${NC}"
@@ -250,12 +250,12 @@ check_mysql() {
 check_opcache() {
     header "PHP OPcache"
 
-    OPC_ENABLE=$(php -i 2>/dev/null | grep "opcache.enable =>" | head -1 | awk '{print $3}')
-    OPC_MEMORY=$(php -i 2>/dev/null | grep "opcache.memory_consumption =>" | head -1 | awk '{print $3}')
-    OPC_MAX_FILES=$(php -i 2>/dev/null | grep "opcache.max_accelerated_files =>" | head -1 | awk '{print $3}')
-    OPC_VALIDATE=$(php -i 2>/dev/null | grep "opcache.validate_timestamps =>" | head -1 | awk '{print $3}')
-    OPC_REVALIDATE=$(php -i 2>/dev/null | grep "opcache.revalidate_freq =>" | head -1 | awk '{print $3}')
-    OPC_INTERNED=$(php -i 2>/dev/null | grep "opcache.interned_strings_buffer =>" | head -1 | awk '{print $3}')
+    OPC_ENABLE=$(php -i 2>/dev/null | grep "opcache.enable =>" | head -1 | awk '{print $3}' || echo "")
+    OPC_MEMORY=$(php -i 2>/dev/null | grep "opcache.memory_consumption =>" | head -1 | awk '{print $3}' || echo "0")
+    OPC_MAX_FILES=$(php -i 2>/dev/null | grep "opcache.max_accelerated_files =>" | head -1 | awk '{print $3}' || echo "0")
+    OPC_VALIDATE=$(php -i 2>/dev/null | grep "opcache.validate_timestamps =>" | head -1 | awk '{print $3}' || echo "")
+    OPC_REVALIDATE=$(php -i 2>/dev/null | grep "opcache.revalidate_freq =>" | head -1 | awk '{print $3}' || echo "")
+    OPC_INTERNED=$(php -i 2>/dev/null | grep "opcache.interned_strings_buffer =>" | head -1 | awk '{print $3}' || echo "0")
 
     echo -e "  opcache.enable = ${OPC_ENABLE:-not set}"
     echo -e "  opcache.memory_consumption = ${OPC_MEMORY:-not set} MB"
@@ -339,11 +339,11 @@ check_laravel() {
     VIEW_CACHED=false
     EVENT_CACHED=false
 
-    [[ -f "$LARAVEL_ROOT/bootstrap/cache/config.php" ]] && CONFIG_CACHED=true
-    [[ -f "$LARAVEL_ROOT/bootstrap/cache/routes-v7.php" ]] && ROUTE_CACHED=true
-    [[ -d "$LARAVEL_ROOT/storage/framework/views" ]] && \
-        [[ $(find "$LARAVEL_ROOT/storage/framework/views" -name "*.php" 2>/dev/null | wc -l) -gt 0 ]] && VIEW_CACHED=true
-    [[ -f "$LARAVEL_ROOT/bootstrap/cache/events.php" ]] && EVENT_CACHED=true
+    [[ -f "$LARAVEL_ROOT/bootstrap/cache/config.php" ]] && CONFIG_CACHED=true || true
+    [[ -f "$LARAVEL_ROOT/bootstrap/cache/routes-v7.php" ]] && ROUTE_CACHED=true || true
+    VIEW_COUNT=$(find "$LARAVEL_ROOT/storage/framework/views" -name "*.php" 2>/dev/null | wc -l || echo "0")
+    [[ "$VIEW_COUNT" -gt 0 ]] && VIEW_CACHED=true || true
+    [[ -f "$LARAVEL_ROOT/bootstrap/cache/events.php" ]] && EVENT_CACHED=true || true
 
     echo -e "  config:cache  = $($CONFIG_CACHED && echo -e "${GREEN}cached${NC}" || echo -e "${RED}not cached${NC}")"
     echo -e "  route:cache   = $($ROUTE_CACHED && echo -e "${GREEN}cached${NC}" || echo -e "${RED}not cached${NC}")"
@@ -353,7 +353,7 @@ check_laravel() {
     # Check .env for drivers
     if [[ -f "$LARAVEL_ROOT/.env" ]]; then
         SESSION_DRV=$(grep "^SESSION_DRIVER=" "$LARAVEL_ROOT/.env" | cut -d= -f2)
-        CACHE_DRV=$(grep "^CACHE_STORE=" "$LARAVEL_ROOT/.env" | cut -d= -f2 || grep "^CACHE_DRIVER=" "$LARAVEL_ROOT/.env" | cut -d= -f2)
+        CACHE_DRV=$(grep -E "^CACHE_(STORE|DRIVER)=" "$LARAVEL_ROOT/.env" | head -1 | cut -d= -f2 || echo "")
         QUEUE_DRV=$(grep "^QUEUE_CONNECTION=" "$LARAVEL_ROOT/.env" | cut -d= -f2)
         echo -e "  SESSION_DRIVER = ${BOLD}${SESSION_DRV:-not set}${NC}"
         echo -e "  CACHE_STORE = ${BOLD}${CACHE_DRV:-not set}${NC}"
@@ -600,27 +600,77 @@ main() {
         esac
     done
 
+    # ── Apply Phase (per-item) ──
+    header "Apply Changes"
+    echo -e "  ${CYAN}I'll ask for each change individually. Configs will be backed up to:${NC}"
+    echo -e "  $BACKUP_DIR"
     echo ""
-    if ! confirm "Apply recommended changes? (configs will be backed up to $BACKUP_DIR)"; then
-        info "No changes made. You can apply manually using the recommendations above."
-        exit 0
-    fi
-
-    # ── Apply Phase ──
-    header "Applying Changes"
     mkdir -p "$BACKUP_DIR"
+
+    APPLIED=0
+    SKIPPED=0
 
     for c in "${CHANGES[@]}"; do
         case $c in
-            phpfpm)  apply_phpfpm ;;
-            nginx)   apply_nginx ;;
-            mysql)   apply_mysql ;;
-            opcache) apply_opcache ;;
-            limits)  apply_limits ;;
-            laravel) apply_laravel ;;
+            phpfpm)
+                if confirm "Apply PHP-FPM tuning? (max_children $PM_MAX -> $REC_MAX_CHILDREN, etc.)"; then
+                    apply_phpfpm
+                    ((APPLIED++))
+                else
+                    info "Skipped PHP-FPM"
+                    ((SKIPPED++))
+                fi
+                ;;
+            nginx)
+                if confirm "Apply Nginx tuning? (worker_connections -> $REC_WORKER_CONN, multi_accept on, server_tokens off)"; then
+                    apply_nginx
+                    ((APPLIED++))
+                else
+                    info "Skipped Nginx"
+                    ((SKIPPED++))
+                fi
+                ;;
+            mysql)
+                if confirm "Apply MySQL tuning? (innodb_buffer_pool -> ${REC_INNODB_MB}MB, max_connections -> $REC_MAX_CONN)"; then
+                    apply_mysql
+                    ((APPLIED++))
+                else
+                    info "Skipped MySQL"
+                    ((SKIPPED++))
+                fi
+                ;;
+            opcache)
+                if confirm "Apply OPcache tuning? (memory 256MB, max_files 20000, validate_timestamps off)"; then
+                    apply_opcache
+                    ((APPLIED++))
+                else
+                    info "Skipped OPcache"
+                    ((SKIPPED++))
+                fi
+                ;;
+            limits)
+                if confirm "Increase open file limits? (nofile -> 65535)"; then
+                    apply_limits
+                    ((APPLIED++))
+                else
+                    info "Skipped file limits"
+                    ((SKIPPED++))
+                fi
+                ;;
+            laravel)
+                if confirm "Run Laravel cache commands? (config:cache, route:cache, view:cache, event:cache)"; then
+                    apply_laravel
+                    ((APPLIED++))
+                else
+                    info "Skipped Laravel caches"
+                    ((SKIPPED++))
+                fi
+                ;;
         esac
         echo ""
     done
+
+    echo -e "  ${GREEN}Applied: $APPLIED${NC} | ${YELLOW}Skipped: $SKIPPED${NC}"
 
     header "Done"
     ok "All changes applied. Backups saved to: $BACKUP_DIR"
