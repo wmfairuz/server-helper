@@ -406,6 +406,85 @@ check_laravel() {
     export LARAVEL_ROOT
 }
 
+# ─── Upload Size Limits ────────────────────────────────────────────
+check_uploads() {
+    header "Upload Size Limits"
+
+    PHP_VERSION=$(php -v 2>/dev/null | head -1 | grep -oP '\d+\.\d+' | head -1)
+
+    # Find FPM php.ini
+    UPLOAD_PHP_INI=""
+    for f in "/etc/php/${PHP_VERSION}/fpm/php.ini" "/etc/php/${PHP_VERSION}/cli/php.ini" "/etc/php/php.ini"; do
+        if [[ -f "$f" ]]; then
+            UPLOAD_PHP_INI="$f"
+            break
+        fi
+    done
+
+    # Read current PHP upload values
+    UPLOAD_MAX=$(php -i 2>/dev/null | grep "^upload_max_filesize" | awk '{print $3}' || echo "2M")
+    POST_MAX=$(php -i 2>/dev/null | grep "^post_max_size" | awk '{print $3}' || echo "8M")
+
+    echo -e "  PHP ini: ${UPLOAD_PHP_INI:-not found}"
+    echo -e "  upload_max_filesize = ${BOLD}$UPLOAD_MAX${NC}"
+    echo -e "  post_max_size       = ${BOLD}$POST_MAX${NC}"
+
+    # Find nginx client_max_body_size (search all nginx configs)
+    NGINX_UPLOAD_CONF=""
+    NGINX_BODY_SIZE=""
+    if [[ -d "/etc/nginx" ]]; then
+        NGINX_UPLOAD_CONF=$(grep -rl "client_max_body_size" /etc/nginx/ 2>/dev/null | grep -v "#" | head -1 || echo "")
+        if [[ -n "$NGINX_UPLOAD_CONF" ]]; then
+            NGINX_BODY_SIZE=$(grep "client_max_body_size" "$NGINX_UPLOAD_CONF" 2>/dev/null | grep -v "#" | head -1 | awk '{print $2}' | tr -d ';' || echo "")
+        fi
+    fi
+
+    echo -e "  client_max_body_size = ${BOLD}${NGINX_BODY_SIZE:-not set (default: 1m)}${NC}"
+    [[ -n "$NGINX_UPLOAD_CONF" ]] && echo -e "  Nginx config: $NGINX_UPLOAD_CONF"
+
+    # Convert size strings (e.g. 64M, 2G, 512K) to MB for comparison
+    to_mb() {
+        local val="${1,,}"
+        if [[ "$val" =~ ^([0-9]+)g$ ]]; then echo $(( ${BASH_REMATCH[1]} * 1024 ))
+        elif [[ "$val" =~ ^([0-9]+)m$ ]]; then echo "${BASH_REMATCH[1]}"
+        elif [[ "$val" =~ ^([0-9]+)k$ ]]; then echo $(( ${BASH_REMATCH[1]} / 1024 ))
+        elif [[ "$val" =~ ^[0-9]+$ ]]; then echo "0"
+        else echo "0"; fi
+    }
+
+    UPLOAD_MAX_MB=$(to_mb "$UPLOAD_MAX")
+    POST_MAX_MB=$(to_mb "$POST_MAX")
+    NGINX_BODY_MB=$(to_mb "${NGINX_BODY_SIZE:-1m}")
+
+    UPLOAD_NEEDS_TUNING=false
+    echo ""
+
+    # upload_max_filesize must be < post_max_size
+    if [[ "$UPLOAD_MAX_MB" -ge "$POST_MAX_MB" ]]; then
+        bad "upload_max_filesize ($UPLOAD_MAX) must be less than post_max_size ($POST_MAX)"
+        UPLOAD_NEEDS_TUNING=true
+    fi
+
+    # Nginx will reject requests larger than client_max_body_size before PHP sees them
+    if [[ "$NGINX_BODY_MB" -gt 0 && "$NGINX_BODY_MB" -lt "$POST_MAX_MB" ]]; then
+        bad "client_max_body_size ($NGINX_BODY_SIZE) < post_max_size ($POST_MAX) — Nginx will reject large uploads before PHP sees them"
+        UPLOAD_NEEDS_TUNING=true
+    fi
+
+    if [[ "$UPLOAD_MAX_MB" -lt 32 ]]; then
+        warn "upload_max_filesize ($UPLOAD_MAX) is low — many apps need at least 32M"
+        UPLOAD_NEEDS_TUNING=true
+    else
+        ok "upload_max_filesize ($UPLOAD_MAX) looks reasonable"
+    fi
+
+    if $UPLOAD_NEEDS_TUNING; then
+        add_change "uploads"
+    fi
+
+    export UPLOAD_PHP_INI NGINX_UPLOAD_CONF PHP_VERSION UPLOAD_MAX POST_MAX NGINX_BODY_SIZE
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # APPLY CHANGES
 # ═══════════════════════════════════════════════════════════════════
@@ -586,6 +665,83 @@ apply_opcache() {
     warn "opcache.validate_timestamps=0 means you must restart PHP-FPM after code deploys"
 }
 
+apply_uploads() {
+    echo -en "  ${YELLOW}Enter desired upload size (e.g. 32M, 64M, 128M) [64M]: ${NC}"
+    read -r DESIRED_SIZE
+    DESIRED_SIZE="${DESIRED_SIZE:-64M}"
+    DESIRED_SIZE="${DESIRED_SIZE^^}"  # normalize to uppercase (64m -> 64M)
+
+    if ! [[ "$DESIRED_SIZE" =~ ^[0-9]+(M|G|K)$ ]]; then
+        bad "Invalid size format: $DESIRED_SIZE. Use e.g. 64M, 128M, 2G"
+        return
+    fi
+
+    # post_max_size gets ~25% headroom to cover form field overhead
+    SIZE_NUM="${DESIRED_SIZE%[MGK]}"
+    SIZE_UNIT="${DESIRED_SIZE: -1}"
+    POST_SIZE_NUM=$(( SIZE_NUM + SIZE_NUM / 4 ))
+    [[ "$POST_SIZE_NUM" -le "$SIZE_NUM" ]] && POST_SIZE_NUM=$(( SIZE_NUM + 1 ))
+    POST_SIZE="${POST_SIZE_NUM}${SIZE_UNIT}"
+
+    # ── PHP ini ──
+    if [[ -n "$UPLOAD_PHP_INI" && -f "$UPLOAD_PHP_INI" ]]; then
+        backup_file "$UPLOAD_PHP_INI"
+
+        set_php_ini() {
+            local key="$1" val="$2"
+            if grep -qE "^${key}\s*=" "$UPLOAD_PHP_INI"; then
+                sed -i "s|^${key}\s*=.*|${key} = ${val}|" "$UPLOAD_PHP_INI"
+            elif grep -qE "^;${key}\s*=" "$UPLOAD_PHP_INI"; then
+                sed -i "s|^;${key}\s*=.*|${key} = ${val}|" "$UPLOAD_PHP_INI"
+            else
+                echo "${key} = ${val}" >> "$UPLOAD_PHP_INI"
+            fi
+        }
+
+        set_php_ini "upload_max_filesize" "$DESIRED_SIZE"
+        set_php_ini "post_max_size" "$POST_SIZE"
+        ok "PHP ini updated: upload_max_filesize=$DESIRED_SIZE, post_max_size=$POST_SIZE"
+
+        info "Restarting PHP-FPM..."
+        if systemctl restart "php${PHP_VERSION}-fpm" 2>/dev/null; then
+            ok "PHP-FPM restarted"
+        else
+            warn "Could not restart PHP-FPM automatically — restart manually: systemctl restart php${PHP_VERSION}-fpm"
+        fi
+    else
+        warn "PHP ini not found. Set these manually:"
+        echo "  upload_max_filesize = $DESIRED_SIZE"
+        echo "  post_max_size = $POST_SIZE"
+    fi
+
+    # ── Nginx ──
+    if [[ -d "/etc/nginx" ]]; then
+        # Write to existing location if found, otherwise nginx.conf
+        NGINX_TARGET="${NGINX_UPLOAD_CONF:-/etc/nginx/nginx.conf}"
+        backup_file "$NGINX_TARGET"
+
+        if grep -q "client_max_body_size" "$NGINX_TARGET" 2>/dev/null; then
+            sed -i "s|client_max_body_size\s\+[^;]*;|client_max_body_size ${DESIRED_SIZE};|g" "$NGINX_TARGET"
+        else
+            # Add inside http block, after sendfile directive
+            sed -i "/^\s*sendfile\s/a\\\\tclient_max_body_size ${DESIRED_SIZE};" "$NGINX_TARGET"
+        fi
+        ok "Nginx updated: client_max_body_size=$DESIRED_SIZE"
+
+        info "Testing nginx config..."
+        if nginx -t 2>&1; then
+            systemctl reload nginx
+            ok "Nginx reloaded"
+        else
+            bad "Nginx config test failed! Restoring backup..."
+            cp "$BACKUP_DIR/$(basename "$NGINX_TARGET")" "$NGINX_TARGET"
+            bad "Backup restored. Fix manually."
+        fi
+    else
+        warn "Nginx not found. Set manually: client_max_body_size ${DESIRED_SIZE};"
+    fi
+}
+
 apply_laravel() {
     if [[ -z "$LARAVEL_ROOT" || ! -f "$LARAVEL_ROOT/artisan" ]]; then
         warn "Laravel root not set"
@@ -608,7 +764,7 @@ apply_laravel() {
 show_usage() {
     echo "Usage: sudo $0 [--only <section>]"
     echo ""
-    echo "Sections: phpfpm, nginx, mysql, opcache, limits, laravel"
+    echo "Sections: phpfpm, nginx, mysql, opcache, limits, uploads, laravel"
     echo "Example:  sudo $0 --only mysql"
 }
 
@@ -656,8 +812,9 @@ main() {
     [[ -z "$ONLY" || "$ONLY" == "nginx" ]]   && check_nginx
     [[ -z "$ONLY" || "$ONLY" == "mysql" ]]   && check_mysql
     [[ -z "$ONLY" || "$ONLY" == "opcache" ]] && check_opcache
-    [[ -z "$ONLY" || "$ONLY" == "limits" ]]  && check_limits
-    [[ -z "$ONLY" || "$ONLY" == "laravel" ]] && check_laravel
+    [[ -z "$ONLY" || "$ONLY" == "limits" ]]   && check_limits
+    [[ -z "$ONLY" || "$ONLY" == "uploads" ]]  && check_uploads
+    [[ -z "$ONLY" || "$ONLY" == "laravel" ]]  && check_laravel
 
     # ── Summary ──
     header "Summary"
@@ -675,6 +832,7 @@ main() {
             mysql)   echo -e "    - MySQL buffer/connections" ;;
             opcache) echo -e "    - PHP OPcache settings" ;;
             limits)  echo -e "    - System file limits" ;;
+            uploads) echo -e "    - Upload size limits (PHP + Nginx)" ;;
             laravel) echo -e "    - Laravel cache commands" ;;
         esac
     done
@@ -733,6 +891,15 @@ main() {
                     ((APPLIED++))
                 else
                     info "Skipped file limits"
+                    ((SKIPPED++))
+                fi
+                ;;
+            uploads)
+                if confirm "Apply upload size limit changes? (PHP ini + Nginx)"; then
+                    apply_uploads
+                    ((APPLIED++))
+                else
+                    info "Skipped upload size limits"
                     ((SKIPPED++))
                 fi
                 ;;
