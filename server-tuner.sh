@@ -421,12 +421,20 @@ check_uploads() {
         fi
     done
 
-    # Read current PHP upload + memory values
-    UPLOAD_MAX=$(php -i 2>/dev/null | grep "^upload_max_filesize" | awk '{print $3}' || echo "2M")
-    POST_MAX=$(php -i 2>/dev/null | grep "^post_max_size" | awk '{print $3}' || echo "8M")
-    MEM_LIMIT=$(php -i 2>/dev/null | grep "^memory_limit" | awk '{print $3}' || echo "128M")
+    # Read current PHP upload + memory values from FPM (not CLI which has different ini)
+    PHP_FPM_BIN="php-fpm${PHP_VERSION}"
+    if command -v "$PHP_FPM_BIN" &>/dev/null; then
+        PHP_INFO_SRC="$PHP_FPM_BIN"
+    else
+        PHP_INFO_SRC="php"
+        warn "php-fpm${PHP_VERSION} binary not found — falling back to CLI php -i (values may not reflect FPM config)"
+    fi
 
-    echo -e "  PHP ini: ${UPLOAD_PHP_INI:-not found}"
+    UPLOAD_MAX=$($PHP_INFO_SRC -i 2>/dev/null | grep "^upload_max_filesize" | awk '{print $3}' || echo "2M")
+    POST_MAX=$($PHP_INFO_SRC -i 2>/dev/null | grep "^post_max_size" | awk '{print $3}' || echo "8M")
+    MEM_LIMIT=$($PHP_INFO_SRC -i 2>/dev/null | grep "^memory_limit" | awk '{print $3}' || echo "128M")
+
+    echo -e "  PHP ini: ${UPLOAD_PHP_INI:-not found} (via $PHP_INFO_SRC)"
     echo -e "  upload_max_filesize = ${BOLD}$UPLOAD_MAX${NC}"
     echo -e "  post_max_size       = ${BOLD}$POST_MAX${NC}"
     echo -e "  memory_limit        = ${BOLD}$MEM_LIMIT${NC}"
