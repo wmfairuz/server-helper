@@ -421,13 +421,15 @@ check_uploads() {
         fi
     done
 
-    # Read current PHP upload values
+    # Read current PHP upload + memory values
     UPLOAD_MAX=$(php -i 2>/dev/null | grep "^upload_max_filesize" | awk '{print $3}' || echo "2M")
     POST_MAX=$(php -i 2>/dev/null | grep "^post_max_size" | awk '{print $3}' || echo "8M")
+    MEM_LIMIT=$(php -i 2>/dev/null | grep "^memory_limit" | awk '{print $3}' || echo "128M")
 
     echo -e "  PHP ini: ${UPLOAD_PHP_INI:-not found}"
     echo -e "  upload_max_filesize = ${BOLD}$UPLOAD_MAX${NC}"
     echo -e "  post_max_size       = ${BOLD}$POST_MAX${NC}"
+    echo -e "  memory_limit        = ${BOLD}$MEM_LIMIT${NC}"
 
     # Find nginx client_max_body_size (search all nginx configs)
     NGINX_UPLOAD_CONF=""
@@ -478,11 +480,22 @@ check_uploads() {
         ok "upload_max_filesize ($UPLOAD_MAX) looks reasonable"
     fi
 
+    MEM_LIMIT_MB=$(to_mb "$MEM_LIMIT")
+    if [[ "$MEM_LIMIT" == "-1" ]]; then
+        ok "memory_limit = unlimited"
+    elif [[ "$MEM_LIMIT_MB" -lt 256 ]]; then
+        warn "memory_limit ($MEM_LIMIT) is low — Laravel apps can exhaust this under heavy load"
+        echo -e "  ${GREEN}Recommended: 256M${NC}"
+        UPLOAD_NEEDS_TUNING=true
+    else
+        ok "memory_limit ($MEM_LIMIT) looks reasonable"
+    fi
+
     if $UPLOAD_NEEDS_TUNING; then
         add_change "uploads"
     fi
 
-    export UPLOAD_PHP_INI NGINX_UPLOAD_CONF PHP_VERSION UPLOAD_MAX POST_MAX NGINX_BODY_SIZE
+    export UPLOAD_PHP_INI NGINX_UPLOAD_CONF PHP_VERSION UPLOAD_MAX POST_MAX NGINX_BODY_SIZE MEM_LIMIT
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -683,6 +696,16 @@ apply_uploads() {
     [[ "$POST_SIZE_NUM" -le "$SIZE_NUM" ]] && POST_SIZE_NUM=$(( SIZE_NUM + 1 ))
     POST_SIZE="${POST_SIZE_NUM}${SIZE_UNIT}"
 
+    echo -en "  ${YELLOW}Enter desired memory_limit (e.g. 256M, 512M, -1 for unlimited) [256M]: ${NC}"
+    read -r DESIRED_MEM
+    DESIRED_MEM="${DESIRED_MEM:-256M}"
+    DESIRED_MEM="${DESIRED_MEM^^}"
+
+    if [[ "$DESIRED_MEM" != "-1" ]] && ! [[ "$DESIRED_MEM" =~ ^[0-9]+(M|G|K)$ ]]; then
+        bad "Invalid memory_limit format: $DESIRED_MEM. Use e.g. 256M, 512M, 1G, or -1"
+        return
+    fi
+
     # ── PHP ini ──
     if [[ -n "$UPLOAD_PHP_INI" && -f "$UPLOAD_PHP_INI" ]]; then
         backup_file "$UPLOAD_PHP_INI"
@@ -700,7 +723,8 @@ apply_uploads() {
 
         set_php_ini "upload_max_filesize" "$DESIRED_SIZE"
         set_php_ini "post_max_size" "$POST_SIZE"
-        ok "PHP ini updated: upload_max_filesize=$DESIRED_SIZE, post_max_size=$POST_SIZE"
+        set_php_ini "memory_limit" "$DESIRED_MEM"
+        ok "PHP ini updated: upload_max_filesize=$DESIRED_SIZE, post_max_size=$POST_SIZE, memory_limit=$DESIRED_MEM"
 
         info "Restarting PHP-FPM..."
         if systemctl restart "php${PHP_VERSION}-fpm" 2>/dev/null; then
@@ -712,6 +736,7 @@ apply_uploads() {
         warn "PHP ini not found. Set these manually:"
         echo "  upload_max_filesize = $DESIRED_SIZE"
         echo "  post_max_size = $POST_SIZE"
+        echo "  memory_limit = $DESIRED_MEM"
     fi
 
     # ── Nginx ──
@@ -832,7 +857,7 @@ main() {
             mysql)   echo -e "    - MySQL buffer/connections" ;;
             opcache) echo -e "    - PHP OPcache settings" ;;
             limits)  echo -e "    - System file limits" ;;
-            uploads) echo -e "    - Upload size limits (PHP + Nginx)" ;;
+            uploads) echo -e "    - Upload size limits + memory_limit (PHP + Nginx)" ;;
             laravel) echo -e "    - Laravel cache commands" ;;
         esac
     done
@@ -895,7 +920,7 @@ main() {
                 fi
                 ;;
             uploads)
-                if confirm "Apply upload size limit changes? (PHP ini + Nginx)"; then
+                if confirm "Apply upload size + memory_limit changes? (PHP ini + Nginx)"; then
                     apply_uploads
                     ((APPLIED++))
                 else
