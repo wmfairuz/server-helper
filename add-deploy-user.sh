@@ -1,17 +1,17 @@
 #!/bin/bash
 # add-deploy-user.sh
-# Add a new team member as a deploy user.
+# Add a new team member to a per-app deployers group.
 #
-# Usage: ./add-deploy-user.sh <username> [ssh_public_key]
-# Example: ./add-deploy-user.sh alice 'ssh-ed25519 AAAA...'
+# Usage: GROUP=<group> ./add-deploy-user.sh <username> [ssh_public_key]
+# Example: GROUP=deployers-appA ./add-deploy-user.sh alice 'ssh-ed25519 AAAA...'
 #
-# Override app path via env var:
-# APP_PATH=/opt/www/myapp ./add-deploy-user.sh alice
+# APP_PATH is only used in the summary output — set it to match your app.
+# APP_PATH=/opt/www/appA GROUP=deployers-appA ./add-deploy-user.sh alice
 
 set -euo pipefail
 
 APP_PATH="${APP_PATH:-/opt/www/app}"
-GROUP="deployers"
+GROUP="${GROUP:?Usage: GROUP=<group_name> $0 <username> [ssh_public_key]}"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run as root." >&2
@@ -19,12 +19,12 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <username> [ssh_public_key]"
+    echo "Usage: GROUP=<group_name> $0 <username> [ssh_public_key]"
     echo ""
     echo "Examples:"
-    echo "  $0 alice"
-    echo "  $0 alice 'ssh-ed25519 AAAA...'"
-    echo "  APP_PATH=/opt/www/myapp $0 alice 'ssh-ed25519 AAAA...'"
+    echo "  GROUP=deployers-appA $0 alice"
+    echo "  GROUP=deployers-appA $0 alice 'ssh-ed25519 AAAA...'"
+    echo "  APP_PATH=/opt/www/appA GROUP=deployers-appA $0 alice 'ssh-ed25519 AAAA...'"
     exit 1
 fi
 

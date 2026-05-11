@@ -1,18 +1,33 @@
 #!/bin/bash
 # setup-deployers.sh
-# Run once to configure the deployers group, app directory permissions, and sudoers.
+# Run once per app to configure a per-app deployers group, directory permissions, and sudoers.
 #
-# Usage: ./setup-deployers.sh [app_path] [php_version]
-# Example: ./setup-deployers.sh /opt/www/myapp 8.1
+# Usage: ./setup-deployers.sh <app_path> <php_version> <group_name>
+# Example: ./setup-deployers.sh /opt/www/appA 8.1 deployers-appA
 
 set -euo pipefail
 
-APP_PATH="${1:-/opt/www/app}"
-PHP_VERSION="${2:-8.1}"
-GROUP="deployers"
+if [ $# -lt 3 ]; then
+    echo "Usage: $0 <app_path> <php_version> <group_name>"
+    echo ""
+    echo "Examples:"
+    echo "  $0 /opt/www/appA 8.1 deployers-appA"
+    echo "  $0 /opt/www/appB 8.2 deployers-appB"
+    exit 1
+fi
+
+APP_PATH="$1"
+PHP_VERSION="$2"
+GROUP="$3"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run as root." >&2
+    exit 1
+fi
+
+# Validate group name
+if ! [[ "$GROUP" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo "[!] Invalid group name: $GROUP" >&2
     exit 1
 fi
 
@@ -38,20 +53,20 @@ chmod -R 775 "$APP_PATH"
 find "$APP_PATH" -type d -exec chmod g+s {} \;
 echo "[+] Permissions set on: $APP_PATH"
 
-# Sudoers file for deployers group
-SUDOERS_FILE="/etc/sudoers.d/deployers"
+# Per-app sudoers file — named after the group to avoid collisions
+SUDOERS_FILE="/etc/sudoers.d/${GROUP}"
 cat > "$SUDOERS_FILE" << EOF
-# Deployers — service management only, no general sudo
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart php${PHP_VERSION}-fpm
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload php${PHP_VERSION}-fpm
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart supervisor
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart redis-server
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/systemctl status php${PHP_VERSION}-fpm
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/systemctl status supervisor
-%deployers ALL=(ALL) NOPASSWD: /usr/bin/supervisorctl *
+# ${GROUP} — service management only, no general sudo
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart php${PHP_VERSION}-fpm
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload php${PHP_VERSION}-fpm
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart supervisor
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart redis-server
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status php${PHP_VERSION}-fpm
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status supervisor
+%${GROUP} ALL=(ALL) NOPASSWD: /usr/bin/supervisorctl *
 EOF
 
 chmod 440 "$SUDOERS_FILE"
@@ -66,4 +81,5 @@ else
 fi
 
 echo ""
-echo "==> Done. Run ./add-deploy-user.sh <username> to add team members."
+echo "==> Done. Add teammates with:"
+echo "    GROUP=$GROUP ./add-deploy-user.sh <username> [ssh_public_key]"
