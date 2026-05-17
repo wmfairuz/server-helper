@@ -309,6 +309,35 @@ check_opcache() {
     export OPC_CONF
 }
 
+# ─── Swap ──────────────────────────────────────────────────────────
+check_swap() {
+    header "Swap"
+
+    SWAP_TOTAL_KB=$(grep SwapTotal /proc/meminfo | awk '{print $2}')
+    SWAP_TOTAL_MB=$((SWAP_TOTAL_KB / 1024))
+    SWAPPINESS=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo "unknown")
+
+    echo -e "  Swap total: ${BOLD}${SWAP_TOTAL_MB} MB${NC}"
+    echo -e "  vm.swappiness = $SWAPPINESS"
+
+    echo ""
+    if [[ "$SWAP_TOTAL_MB" -eq 0 ]]; then
+        bad "No swap configured — OOM killer may terminate processes under memory pressure"
+        REC_SWAP_MB=$((TOTAL_MEM_MB))
+        [[ $REC_SWAP_MB -gt 4096 ]] && REC_SWAP_MB=4096
+        echo -e "  ${GREEN}Recommended: ${REC_SWAP_MB}MB swap${NC}"
+        add_change "swap"
+    else
+        ok "Swap is configured (${SWAP_TOTAL_MB}MB)"
+        if [[ "$SWAPPINESS" -gt 10 ]]; then
+            warn "vm.swappiness=$SWAPPINESS is high for a server — recommend 10"
+            add_change "swap"
+        fi
+    fi
+
+    export SWAP_TOTAL_MB SWAPPINESS
+}
+
 # ─── File Limits ───────────────────────────────────────────────────
 check_limits() {
     header "System Limits"
@@ -799,6 +828,54 @@ apply_laravel() {
     ok "Laravel caches built"
 }
 
+apply_swap() {
+    if [[ "$SWAP_TOTAL_MB" -eq 0 ]]; then
+        echo -en "  ${YELLOW}Enter swap size (e.g. 2G, 4G, 1G) [${REC_SWAP_MB}M]: ${NC}"
+        read -r DESIRED_SWAP
+        DESIRED_SWAP="${DESIRED_SWAP:-${REC_SWAP_MB}M}"
+        DESIRED_SWAP="${DESIRED_SWAP^^}"
+
+        if ! [[ "$DESIRED_SWAP" =~ ^[0-9]+(M|G)$ ]]; then
+            bad "Invalid size: $DESIRED_SWAP. Use e.g. 2G, 4G, 2048M"
+            return
+        fi
+
+        # Convert to bytes for fallocate
+        SIZE_NUM="${DESIRED_SWAP%[MG]}"
+        SIZE_UNIT="${DESIRED_SWAP: -1}"
+        if [[ "$SIZE_UNIT" == "G" ]]; then
+            SIZE_BYTES=$(( SIZE_NUM * 1024 * 1024 * 1024 ))
+        else
+            SIZE_BYTES=$(( SIZE_NUM * 1024 * 1024 ))
+        fi
+
+        SWAPFILE="/swapfile"
+        info "Creating ${DESIRED_SWAP} swapfile at $SWAPFILE..."
+        fallocate -l "$SIZE_BYTES" "$SWAPFILE" || dd if=/dev/zero of="$SWAPFILE" bs=1M count="$((SIZE_BYTES / 1024 / 1024))" status=progress
+        chmod 600 "$SWAPFILE"
+        mkswap "$SWAPFILE"
+        swapon "$SWAPFILE"
+        ok "Swap enabled: $(free -h | grep Swap)"
+
+        # Persist across reboots
+        if ! grep -q "$SWAPFILE" /etc/fstab; then
+            echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
+            ok "Added to /etc/fstab (persists on reboot)"
+        fi
+    fi
+
+    # Set swappiness to 10 for servers
+    if [[ "$SWAPPINESS" -gt 10 ]]; then
+        sysctl vm.swappiness=10
+        if grep -q "vm.swappiness" /etc/sysctl.conf; then
+            sed -i "s/^vm.swappiness\s*=.*/vm.swappiness=10/" /etc/sysctl.conf
+        else
+            echo "vm.swappiness=10" >> /etc/sysctl.conf
+        fi
+        ok "vm.swappiness set to 10"
+    fi
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════
@@ -806,7 +883,7 @@ apply_laravel() {
 show_usage() {
     echo "Usage: sudo $0 [--only <section>]"
     echo ""
-    echo "Sections: phpfpm, nginx, mysql, opcache, limits, uploads, laravel"
+    echo "Sections: phpfpm, nginx, mysql, opcache, limits, uploads, laravel, swap"
     echo "Example:  sudo $0 --only mysql"
 }
 
@@ -854,9 +931,10 @@ main() {
     [[ -z "$ONLY" || "$ONLY" == "nginx" ]]   && check_nginx
     [[ -z "$ONLY" || "$ONLY" == "mysql" ]]   && check_mysql
     [[ -z "$ONLY" || "$ONLY" == "opcache" ]] && check_opcache
-    [[ -z "$ONLY" || "$ONLY" == "limits" ]]   && check_limits
-    [[ -z "$ONLY" || "$ONLY" == "uploads" ]]  && check_uploads
-    [[ -z "$ONLY" || "$ONLY" == "laravel" ]]  && check_laravel
+    [[ -z "$ONLY" || "$ONLY" == "limits" ]]  && check_limits
+    [[ -z "$ONLY" || "$ONLY" == "uploads" ]] && check_uploads
+    [[ -z "$ONLY" || "$ONLY" == "laravel" ]] && check_laravel
+    [[ -z "$ONLY" || "$ONLY" == "swap" ]]    && check_swap
 
     # ── Summary ──
     header "Summary"
@@ -876,6 +954,7 @@ main() {
             limits)  echo -e "    - System file limits" ;;
             uploads) echo -e "    - Upload size limits + memory_limit (PHP + Nginx)" ;;
             laravel) echo -e "    - Laravel cache commands" ;;
+            swap)    echo -e "    - Swap not configured (or swappiness too high)" ;;
         esac
     done
 
@@ -952,6 +1031,25 @@ main() {
                 else
                     info "Skipped Laravel caches"
                     ((SKIPPED++))
+                fi
+                ;;
+            swap)
+                if [[ "$SWAP_TOTAL_MB" -eq 0 ]]; then
+                    if confirm "Configure swap? (will prompt for size)"; then
+                        apply_swap
+                        ((APPLIED++))
+                    else
+                        info "Skipped swap"
+                        ((SKIPPED++))
+                    fi
+                else
+                    if confirm "Set vm.swappiness=10 for server workload?"; then
+                        apply_swap
+                        ((APPLIED++))
+                    else
+                        info "Skipped swappiness"
+                        ((SKIPPED++))
+                    fi
                 fi
                 ;;
         esac
