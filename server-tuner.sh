@@ -591,6 +591,15 @@ apply_mysql() {
     fi
 
     ok "MySQL config updated"
+
+    # Ensure my.cnf includes the directory containing mysqld.cnf
+    MYSQL_MAIN_CNF="/etc/mysql/my.cnf"
+    MYSQL_CONF_DIR=$(dirname "$MYSQL_CONF")
+    if [[ -f "$MYSQL_MAIN_CNF" ]] && ! grep -qF "!includedir ${MYSQL_CONF_DIR}" "$MYSQL_MAIN_CNF"; then
+        echo "!includedir ${MYSQL_CONF_DIR}/" >> "$MYSQL_MAIN_CNF"
+        ok "Added !includedir ${MYSQL_CONF_DIR}/ to $MYSQL_MAIN_CNF"
+    fi
+
     warn "MySQL requires restart to apply changes"
 
     # Detect the correct service name
