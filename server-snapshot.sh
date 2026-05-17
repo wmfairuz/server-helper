@@ -106,7 +106,11 @@ if command -v mysql &>/dev/null; then
     val "mysql_version"           "$(mysql --version 2>/dev/null | awk '{print $3}' || echo 'not found')"
     val "max_connections"         "$(mysql_var max_connections)"
     POOL=$(mysql_var innodb_buffer_pool_size)
-    val "innodb_buffer_pool_size" "${POOL} ($(( ${POOL:-0} / 1024 / 1024 ))MB)"
+    if [[ "$POOL" =~ ^[0-9]+$ ]]; then
+        val "innodb_buffer_pool_size" "${POOL} ($(( POOL / 1024 / 1024 ))MB)"
+    else
+        val "innodb_buffer_pool_size" "${POOL}"
+    fi
     val "innodb_log_file_size"    "$(mysql_var innodb_log_file_size)"
     val "query_cache_size"        "$(mysql_var query_cache_size)"
     val "slow_query_log"          "$(mysql_var slow_query_log)"
