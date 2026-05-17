@@ -121,9 +121,22 @@ fi
 
 # ─── System Limits ──────────────────────────────────────────────────
 section "SYSTEM LIMITS"
-val "open_files_soft"         "$(ulimit -Sn)"
-val "open_files_hard"         "$(ulimit -Hn)"
+val "shell_open_files_soft"   "$(ulimit -Sn)"
+val "shell_open_files_hard"   "$(ulimit -Hn)"
+
+FPM_MASTER_PID=$(pgrep -f 'php-fpm: master' | head -1 || echo "")
+if [[ -n "$FPM_MASTER_PID" && -f "/proc/${FPM_MASTER_PID}/limits" ]]; then
+    FPM_SOFT=$(awk '/Max open files/ {print $4}' "/proc/${FPM_MASTER_PID}/limits")
+    FPM_HARD=$(awk '/Max open files/ {print $5}' "/proc/${FPM_MASTER_PID}/limits")
+    val "phpfpm_open_files_soft"  "${FPM_SOFT}"
+    val "phpfpm_open_files_hard"  "${FPM_HARD}"
+else
+    val "phpfpm_open_files_soft"  "php-fpm not running"
+    val "phpfpm_open_files_hard"  "php-fpm not running"
+fi
+
 val "limits_conf_www-data"    "$(grep 'www-data.*nofile' /etc/security/limits.conf 2>/dev/null | tr '\n' ' ' || echo 'not set')"
+val "systemd_fpm_override"    "$(cat /etc/systemd/system/php${PHP_VERSION}-fpm.service.d/override.conf 2>/dev/null | grep LimitNOFILE || echo 'not set')"
 
 # ─── Redis ──────────────────────────────────────────────────────────
 section "REDIS"
