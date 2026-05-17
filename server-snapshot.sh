@@ -94,7 +94,7 @@ if [[ -f "$NGINX_CONF" ]]; then
     val "keepalive_timeout"       "$(nginx_get 'keepalive_timeout')"
     val "gzip"                    "$(grep -E '^\s*gzip\s+' "$NGINX_CONF" 2>/dev/null | grep -v '#' | head -1 | awk '{print $2}' | tr -d ';' || echo 'not set')"
     val "server_tokens"           "$(nginx_get 'server_tokens')"
-    val "client_max_body_size"    "$(grep 'client_max_body_size' /etc/nginx/nginx.conf /etc/nginx/sites-enabled/* 2>/dev/null | grep -v '#' | head -1 | awk '{print $2}' | tr -d ';' || echo 'not set')"
+    val "client_max_body_size"    "$(grep -h 'client_max_body_size' /etc/nginx/nginx.conf /etc/nginx/sites-enabled/* 2>/dev/null | grep -v '#' | head -1 | awk '{print $2}' | tr -d ';' || echo 'not set')"
 else
     val "nginx" "config not found"
 fi
