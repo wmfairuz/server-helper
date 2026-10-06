@@ -1,13 +1,18 @@
 #!/bin/bash
 
 # MySQL Database Export/Import Script
-# Uses ~/.my.cnf for secure authentication, creates it from .env if needed
+#
+# Credentials live in a dedicated option file per database,
+# ~/.mysql-backup/<database>.cnf (mode 600), created from a Laravel .env with -p.
+# Every mysql/mysqldump call reads ONLY that file (--defaults-file), so a
+# ~/.my.cnf belonging to another app can never override it.
 
-set -e  # Exit on any error
+set -euo pipefail
 
 # Default paths
-DEFAULT_PROJECT_DIR="./"
-DEFAULT_BACKUP_DIR="./"
+DEFAULT_BACKUP_DIR="$HOME/backups/mysql"
+CNF_DIR="$HOME/.mysql-backup"
+LEGACY_CNF="$HOME/.my.cnf"
 
 # Colors for output
 RED='\033[0;31m'
@@ -37,285 +42,356 @@ show_usage() {
     echo "Usage: $0 [OPTIONS] COMMAND"
     echo ""
     echo "COMMANDS:"
-    echo "  export                Export database to compressed file"
-    echo "  import FILE          Import database from compressed file"
+    echo "  export                   Export database to a compressed file"
+    echo "  import FILE              Import database from a compressed file"
     echo ""
     echo "OPTIONS:"
-    echo "  -p, --project-dir DIR    Project directory containing .env file (required only if ~/.my.cnf doesn't exist)"
+    echo "  -p, --project-dir DIR    Laravel project whose .env holds the credentials."
+    echo "                           Writes/refreshes ~/.mysql-backup/<database>.cnf"
+    echo "  -d, --database NAME      Use the saved credentials for this database"
+    echo "                           (needed only when more than one is saved)"
     echo "  -b, --backup-dir DIR     Backup directory (default: $DEFAULT_BACKUP_DIR)"
-    echo "  -h, --help              Show this help message"
+    echo "  -y, --yes                Do not ask for confirmation (for cron)"
+    echo "  -h, --help               Show this help message"
     echo ""
     echo "Examples:"
-    echo "  # First time setup (creates ~/.my.cnf from .env):"
+    echo "  # First time (saves credentials from .env):"
     echo "  $0 -p /opt/www/vetpn9 export"
     echo ""
-    echo "  # After ~/.my.cnf exists (no project path needed):"
+    echo "  # Afterwards (one saved database: no options needed):"
     echo "  $0 export"
-    echo "  $0 import /home/vetpn9/vetpn9_staging_20250609_1022GMT+8.sql.gz"
+    echo "  $0 import ~/backups/mysql/vetpn9_staging_20250609_1022+08.sql.gz"
     echo ""
-    echo "Note: This script uses ~/.my.cnf for MySQL authentication and database name."
-    echo "      If ~/.my.cnf doesn't exist, you must specify -p to create it from your .env file."
+    echo "  # Several apps on one server:"
+    echo "  $0 -d vetpn9_staging export"
 }
 
-# Function to read .env file and extract database configuration
-read_env_config() {
-    local env_file="$1/.env"
-    
+# Read one key from a .env file the way Laravel (phpdotenv) does: last
+# definition wins, surrounding quotes removed (not quotes inside the value),
+# \" and \\ unescaped in double-quoted values, inline " #" comments dropped
+# from unquoted values, Windows line endings tolerated.
+env_get() {
+    local key="$1" file="$2" line val
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$file" | tail -n 1 || true)
+    [[ -z "$line" ]] && return 0
+    val="${line#*=}"
+    val="${val%$'\r'}"
+    val="${val#"${val%%[![:space:]]*}"}"   # trim leading whitespace
+    val="${val%"${val##*[![:space:]]}"}"   # trim trailing whitespace
+    if [[ ${#val} -ge 2 && "$val" == \"*\" ]]; then
+        val="${val:1:${#val}-2}"
+        val="${val//\\\\/$'\x01'}"
+        val="${val//\\\"/\"}"
+        val="${val//$'\x01'/\\}"
+    elif [[ ${#val} -ge 2 && "$val" == \'*\' ]]; then
+        val="${val:1:${#val}-2}"
+    else
+        val="${val%%[[:space:]]#*}"
+    fi
+    printf '%s' "$val"
+}
+
+# Quote a value for a MySQL option file. Unquoted, a "#" starts a comment and
+# backslashes are escape sequences, so passwords containing either get cut
+# short or changed. Inside double quotes only the backslash needs escaping.
+cnf_quote() {
+    local v="$1"
+    v="${v//\\/\\\\}"
+    printf '"%s"' "$v"
+}
+
+# Database names become file names, so keep them to the usual characters.
+valid_db_name() {
+    [[ "$1" =~ ^[A-Za-z0-9_\$-]+$ ]]
+}
+
+# Read "database=" from the [backup_script] section only.
+cnf_database() {
+    awk '/^[[:space:]]*\[/ { in_section = ($0 ~ /^[[:space:]]*\[backup_script\]/) }
+         in_section && /^[[:space:]]*database[[:space:]]*=/ {
+             sub(/^[^=]*=[[:space:]]*/, ""); print; exit
+         }' "$1"
+}
+
+# Write ~/.mysql-backup/<database>.cnf from the project's .env.
+write_cnf_from_env() {
+    local project_dir="$1"
+    local env_file="$project_dir/.env"
+
     if [[ ! -f "$env_file" ]]; then
         print_error ".env file not found at $env_file"
         exit 1
     fi
-    
+
     print_info "Reading database configuration from $env_file"
-    
-    # Extract database configuration
-    DB_HOST=$(grep "^DB_HOST=" "$env_file" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
-    DB_PORT=$(grep "^DB_PORT=" "$env_file" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
-    DB_DATABASE=$(grep "^DB_DATABASE=" "$env_file" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
-    DB_USERNAME=$(grep "^DB_USERNAME=" "$env_file" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
-    DB_PASSWORD=$(grep "^DB_PASSWORD=" "$env_file" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
-    
-    # Validate required fields
-    if [[ -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_DATABASE" || -z "$DB_USERNAME" ]]; then
-        print_error "Missing required database configuration in .env file"
-        print_error "Required: DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME"
+
+    local host port database username password
+    host=$(env_get DB_HOST "$env_file")
+    port=$(env_get DB_PORT "$env_file")
+    database=$(env_get DB_DATABASE "$env_file")
+    username=$(env_get DB_USERNAME "$env_file")
+    password=$(env_get DB_PASSWORD "$env_file")
+    port="${port:-3306}"
+
+    if [[ -z "$host" || -z "$database" || -z "$username" ]]; then
+        print_error "Missing database configuration in $env_file"
+        print_error "Required: DB_HOST, DB_DATABASE, DB_USERNAME (DB_PORT defaults to 3306)"
         exit 1
     fi
-    
-    if [[ -z "$DB_PASSWORD" ]]; then
-        print_error "DB_PASSWORD is empty in .env file"
-        print_error "Cannot create ~/.my.cnf without a password"
+    if [[ -z "$password" ]]; then
+        print_error "DB_PASSWORD is empty in $env_file"
         exit 1
     fi
-    
-    print_info "Database configuration loaded:"
-    print_info "  Host: $DB_HOST"
-    print_info "  Port: $DB_PORT"
-    print_info "  Database: $DB_DATABASE"
-    print_info "  Username: $DB_USERNAME"
+    if ! valid_db_name "$database"; then
+        print_error "Unsupported characters in database name: $database"
+        exit 1
+    fi
+
+    local cnf="$CNF_DIR/$database.cnf" tmp
+    (
+        umask 077
+        mkdir -p "$CNF_DIR"
+        chmod 700 "$CNF_DIR"
+        tmp=$(mktemp "$CNF_DIR/.tmp.XXXXXX")
+        {
+            echo "[client]"
+            echo "host=$host"
+            echo "port=$port"
+            echo "user=$(cnf_quote "$username")"
+            echo "password=$(cnf_quote "$password")"
+            echo ""
+            echo "# Read by mysql_backup.sh only; MySQL clients ignore this group"
+            echo "[backup_script]"
+            echo "database=$database"
+        } > "$tmp"
+        mv "$tmp" "$cnf"
+    )
+
+    print_info "Saved credentials to $cnf (readable only by you)"
+    print_info "  Host: $host:$port  Database: $database  Username: $username"
+
+    CNF_FILE="$cnf"
+    DB_DATABASE="$database"
 }
 
-# Function to create ~/.my.cnf from .env configuration
-create_mysql_config() {
-    local project_dir="$1"
-    local mycnf_file="$HOME/.my.cnf"
-    
-    print_info "~/.my.cnf not found. Let's create it for secure MySQL authentication."
-    print_info ""
-    
-    # Read .env configuration
-    read_env_config "$project_dir"
-    
-    print_warning "This will create ~/.my.cnf with your database credentials and database name."
-    print_info "The file will be secured with 600 permissions (readable only by you)."
-    print_info ""
-    print_info "Configuration to be written:"
-    print_info "  Host: $DB_HOST"
-    print_info "  Port: $DB_PORT"
-    print_info "  Username: $DB_USERNAME"
-    print_info "  Database: $DB_DATABASE"
-    print_info "  Password: [hidden]"
-    print_info ""
-    
-    # Ask for confirmation
-    read -p "Create ~/.my.cnf with these settings? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_info "Cancelled. You can run this script again to create ~/.my.cnf later."
-        exit 0
-    fi
-    
-    # Create backup if file exists
-    if [[ -f "$mycnf_file" ]]; then
-        cp "$mycnf_file" "$mycnf_file.backup.$(date +%Y%m%d_%H%M%S)"
-        print_info "Existing ~/.my.cnf backed up"
-    fi
-    
-    # Create the configuration file
-    cat > "$mycnf_file" << EOF
-[client]
-host=$DB_HOST
-port=$DB_PORT
-user=$DB_USERNAME
-password=$DB_PASSWORD
+# Decide which option file to use and which database it is for.
+# Sets CNF_FILE and DB_DATABASE.
+resolve_credentials() {
+    local project_dir="$1" db_arg="$2"
 
-[mysql]
-host=$DB_HOST
-port=$DB_PORT
-user=$DB_USERNAME
-password=$DB_PASSWORD
-
-[mysqldump]
-host=$DB_HOST
-port=$DB_PORT
-user=$DB_USERNAME
-password=$DB_PASSWORD
-
-# Custom section for this script
-[backup_script]
-database=$DB_DATABASE
-EOF
-    
-    # Secure the file
-    chmod 600 "$mycnf_file"
-    
-    print_success "~/.my.cnf created successfully and secured"
-    print_info "MySQL commands will now use these credentials and database automatically"
-    print_info "You can now run this script without specifying -p (project directory)"
-}
-
-# Function to check MySQL configuration
-check_mysql_config() {
-    local project_dir="$1"
-    local mycnf_file="$HOME/.my.cnf"
-    
-    if [[ -f "$mycnf_file" ]]; then
-        print_info "Using existing ~/.my.cnf for MySQL authentication"
+    # 1. A project directory always wins: its .env is the source of truth.
+    if [[ -n "$project_dir" ]]; then
+        write_cnf_from_env "$project_dir"
         return 0
-    else
-        print_warning "~/.my.cnf not found"
-        
-        if [[ -z "$project_dir" ]]; then
-            print_error "~/.my.cnf not found and no project directory specified"
-            print_error "To create ~/.my.cnf from .env file, use: $0 -p /path/to/project COMMAND"
+    fi
+
+    # 2. An explicitly named database.
+    if [[ -n "$db_arg" ]]; then
+        if ! valid_db_name "$db_arg" || [[ ! -f "$CNF_DIR/$db_arg.cnf" ]]; then
+            print_error "No saved credentials for database '$db_arg'"
+            print_error "Create them with: $0 -p /path/to/project COMMAND"
             exit 1
         fi
-        
-        create_mysql_config "$project_dir"
+        CNF_FILE="$CNF_DIR/$db_arg.cnf"
+        DB_DATABASE="$db_arg"
+        return 0
     fi
+
+    # 3. Exactly one saved database: use it.
+    local saved=()
+    if [[ -d "$CNF_DIR" ]]; then
+        shopt -s nullglob
+        saved=("$CNF_DIR"/*.cnf)
+        shopt -u nullglob
+    fi
+    if [[ ${#saved[@]} -eq 1 ]]; then
+        CNF_FILE="${saved[0]}"
+        DB_DATABASE=$(cnf_database "$CNF_FILE")
+        print_info "Using saved credentials: $CNF_FILE"
+        return 0
+    fi
+    if [[ ${#saved[@]} -gt 1 ]]; then
+        print_error "Several databases are saved; choose one with -d:"
+        local f
+        for f in "${saved[@]}"; do
+            print_error "  -d $(basename "$f" .cnf)"
+        done
+        exit 1
+    fi
+
+    # 4. Legacy setup: ~/.my.cnf written by an older version of this script.
+    if [[ -f "$LEGACY_CNF" ]] && grep -q '^\[backup_script\]' "$LEGACY_CNF"; then
+        CNF_FILE="$LEGACY_CNF"
+        DB_DATABASE=$(cnf_database "$CNF_FILE")
+        print_warning "Using legacy ~/.my.cnf. Re-run once with -p to move to ~/.mysql-backup/."
+        return 0
+    fi
+
+    # 5. Run from inside a Laravel project.
+    if [[ -f "./.env" ]]; then
+        write_cnf_from_env "."
+        return 0
+    fi
+
+    print_error "No saved credentials found"
+    print_error "Create them with: $0 -p /path/to/project COMMAND"
+    exit 1
 }
 
-# Function to get database name from ~/.my.cnf or .env
-get_database_name() {
-    local project_dir="$1"
-    
-    # First try to get database name from ~/.my.cnf
-    if [[ -f "$HOME/.my.cnf" ]]; then
-        DB_DATABASE=$(grep "^database=" "$HOME/.my.cnf" | cut -d'=' -f2)
-        if [[ -n "$DB_DATABASE" ]]; then
-            echo "$DB_DATABASE"
-            return 0
-        fi
+confirm() {
+    [[ "$ASSUME_YES" == "true" ]] && return 0
+    local reply
+    read -r -p "$1 (y/N): " -n 1 reply
+    echo
+    [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+# One pass over the file checks both that the gzip stream is intact (pipefail
+# surfaces a gzip error) and that it ends with "-- Dump completed", which
+# mysqldump/mariadb-dump write only after every table has been dumped.
+dump_is_complete() {
+    local last
+    if ! last=$(gzip -dc "$1" 2>/dev/null | tail -n 1); then
+        return 1
     fi
-    
-    # Fallback to reading from .env file
-    if [[ -n "$project_dir" && -f "$project_dir/.env" ]]; then
-        DB_DATABASE=$(grep "^DB_DATABASE=" "$project_dir/.env" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
-        if [[ -n "$DB_DATABASE" ]]; then
-            echo "$DB_DATABASE"
-            return 0
-        fi
-    fi
-    
-    # If we can't get database name from either source
-    print_error "Cannot determine database name"
-    if [[ ! -f "$HOME/.my.cnf" ]]; then
-        print_error "~/.my.cnf not found and no project directory specified"
-        print_error "Use: $0 -p /path/to/project COMMAND"
-    else
-        print_error "Database name not found in ~/.my.cnf"
-        print_error "You may need to recreate ~/.my.cnf with: $0 -p /path/to/project COMMAND"
-    fi
-    exit 1
+    [[ "$last" == "-- Dump completed"* ]]
 }
 
 # Function to export database
 export_database() {
     local backup_dir="$1"
-    local project_dir="$2"
-    
-    # Check and setup MySQL configuration
-    check_mysql_config "$project_dir"
-    
-    # Get database name
-    DB_DATABASE=$(get_database_name "$project_dir")
+
+    resolve_credentials "$PROJECT_DIR" "$DB_ARG"
     if [[ -z "$DB_DATABASE" ]]; then
-        print_error "Could not determine database name"
+        print_error "Could not determine database name from $CNF_FILE"
         exit 1
     fi
-    
-    # Create backup directory if it doesn't exist
-    mkdir -p "$backup_dir"
-    
-    # Generate timestamp
-    DATETIME=$(date +'%Y%m%d_%H%M')
-    BACKUP_FILE="${backup_dir}/${DB_DATABASE}_${DATETIME}.sql.gz"
-    
+
+    # Options that only some mysqldump builds accept. Help text is captured
+    # first: piping it into "grep -q" would trip pipefail via SIGPIPE.
+    local help
+    help=$(mysqldump --help 2>/dev/null || true)
+    local opts=(
+        --single-transaction   # consistent snapshot, no table locks (InnoDB)
+        --quick                # stream rows instead of buffering tables
+        --no-tablespaces       # avoids needing the PROCESS privilege
+        --routines --events --triggers
+        --hex-blob             # binary columns survive intact
+        --default-character-set=utf8mb4
+    )
+    [[ "$help" == *--set-gtid-purged* ]] && opts+=(--set-gtid-purged=OFF)
+    [[ "$help" == *--column-statistics* ]] && opts+=(--column-statistics=0)
+
+    (umask 077; mkdir -p "$backup_dir")
+
+    local datetime backup_file
+    datetime=$(date +'%Y%m%d_%H%M%Z')
+    backup_file="${backup_dir}/${DB_DATABASE}_${datetime}.sql.gz"
+    PART_FILE="${backup_file}.part"   # global: the EXIT trap outlives this function
+
     print_info "Starting database export..."
     print_info "Database: $DB_DATABASE"
-    print_info "Backup file: $BACKUP_FILE"
-    
-    # Execute export (credentials come from ~/.my.cnf)
-    if mysqldump --single-transaction --quick --no-tablespaces "$DB_DATABASE" | gzip > "$BACKUP_FILE"; then
-        print_success "Database exported successfully to $BACKUP_FILE"
-        
-        # Show file size
-        FILE_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
-        print_info "Backup file size: $FILE_SIZE"
-    else
-        print_error "Database export failed"
+    print_info "Backup file: $backup_file"
+
+    # Write to .part and rename only when complete, so a failed or interrupted
+    # export never leaves a file that looks like a good backup.
+    trap 'rm -f "$PART_FILE"' EXIT
+    if ! (umask 077; mysqldump --defaults-file="$CNF_FILE" "${opts[@]}" "$DB_DATABASE" | gzip > "$PART_FILE"); then
+        print_error "Database export failed (see the mysqldump error above)"
         exit 1
     fi
+    if ! dump_is_complete "$PART_FILE"; then
+        print_error "Export is incomplete: no '-- Dump completed' line at the end"
+        exit 1
+    fi
+    mv "$PART_FILE" "$backup_file"
+    trap - EXIT
+
+    print_success "Database exported successfully to $backup_file"
+    print_info "Backup file size: $(du -h "$backup_file" | cut -f1)"
 }
 
 # Function to import database
 import_database() {
     local import_file="$1"
-    local project_dir="$2"
-    
-    # Check if import file exists
+
     if [[ ! -f "$import_file" ]]; then
         print_error "Import file not found: $import_file"
         exit 1
     fi
-    
-    # Check and setup MySQL configuration
-    check_mysql_config "$project_dir"
-    
-    # Get database name
-    DB_DATABASE=$(get_database_name "$project_dir")
+
+    resolve_credentials "$PROJECT_DIR" "$DB_ARG"
     if [[ -z "$DB_DATABASE" ]]; then
-        print_error "Could not determine database name"
+        print_error "Could not determine database name from $CNF_FILE"
         exit 1
     fi
-    
+
+    # Check the file before touching the database: a corrupt or truncated dump
+    # would otherwise be half-applied.
+    print_info "Checking $import_file..."
+    if ! dump_is_complete "$import_file"; then
+        print_error "Dump is corrupt or incomplete (bad gzip data, or no '-- Dump completed' line)"
+        exit 1
+    fi
+
     print_info "Starting database import..."
     print_info "Database: $DB_DATABASE"
     print_info "Import file: $import_file"
-    print_warning "This will overwrite the existing database: $DB_DATABASE"
-    
-    # Ask for confirmation
-    read -p "Are you sure you want to continue? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    print_warning "Tables in the dump will replace the same tables in $DB_DATABASE."
+    print_warning "Tables that exist only in $DB_DATABASE are left as they are."
+
+    if ! confirm "Are you sure you want to continue?"; then
         print_info "Import cancelled"
         exit 0
     fi
-    
-    # Execute import (credentials come from ~/.my.cnf)
-    if zcat "$import_file" | mysql "$DB_DATABASE"; then
+
+    if gzip -dc "$import_file" | mysql --defaults-file="$CNF_FILE" "$DB_DATABASE"; then
         print_success "Database imported successfully from $import_file"
     else
-        print_error "Database import failed"
+        print_error "Database import failed (see the mysql error above)"
         exit 1
     fi
 }
 
 # Parse command line arguments
 PROJECT_DIR=""
+DB_ARG=""
 BACKUP_DIR="$DEFAULT_BACKUP_DIR"
+ASSUME_YES="false"
 COMMAND=""
 IMPORT_FILE=""
+CNF_FILE=""
+DB_DATABASE=""
+PART_FILE=""
+
+require_value() {
+    if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+        print_error "Option $1 needs a value"
+        show_usage
+        exit 1
+    fi
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         -p|--project-dir)
+            require_value "$@"
             PROJECT_DIR="$2"
             shift 2
             ;;
+        -d|--database)
+            require_value "$@"
+            DB_ARG="$2"
+            shift 2
+            ;;
         -b|--backup-dir)
+            require_value "$@"
             BACKUP_DIR="$2"
             shift 2
+            ;;
+        -y|--yes)
+            ASSUME_YES="true"
+            shift
             ;;
         -h|--help)
             show_usage
@@ -326,6 +402,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         import)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                print_error "Import file not specified"
+                show_usage
+                exit 1
+            fi
             COMMAND="import"
             IMPORT_FILE="$2"
             shift 2
@@ -338,11 +419,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Set default project dir only if ~/.my.cnf doesn't exist
-if [[ -z "$PROJECT_DIR" && ! -f "$HOME/.my.cnf" ]]; then
-    PROJECT_DIR="$DEFAULT_PROJECT_DIR"
-fi
-
 # Validate command
 if [[ -z "$COMMAND" ]]; then
     print_error "No command specified"
@@ -353,19 +429,9 @@ fi
 # Execute command
 case "$COMMAND" in
     export)
-        export_database "$BACKUP_DIR" "$PROJECT_DIR"
+        export_database "$BACKUP_DIR"
         ;;
     import)
-        if [[ -z "$IMPORT_FILE" ]]; then
-            print_error "Import file not specified"
-            show_usage
-            exit 1
-        fi
-        import_database "$IMPORT_FILE" "$PROJECT_DIR"
-        ;;
-    *)
-        print_error "Invalid command: $COMMAND"
-        show_usage
-        exit 1
+        import_database "$IMPORT_FILE"
         ;;
 esac
