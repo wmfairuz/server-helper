@@ -51,6 +51,9 @@ show_usage() {
     echo "  -d, --database NAME      Use the saved credentials for this database"
     echo "                           (needed only when more than one is saved)"
     echo "  -b, --backup-dir DIR     Backup directory (default: $DEFAULT_BACKUP_DIR)"
+    echo "  -s, --skip-data TABLE    Export this table's structure but not its rows."
+    echo "                           Repeatable. For tables a job rebuilds (TRUNCATE"
+    echo "                           mid-dump fails with error 1412) or can regenerate."
     echo "  -y, --yes                Do not ask for confirmation (for cron)"
     echo "  -h, --help               Show this help message"
     echo ""
@@ -64,6 +67,9 @@ show_usage() {
     echo ""
     echo "  # Several apps on one server:"
     echo "  $0 -d vetpn9_staging export"
+    echo ""
+    echo "  # Keep a rebuilt summary table's structure, skip its rows:"
+    echo "  $0 -s student_stat_summaries export"
 }
 
 # Read one key from a .env file the way Laravel (phpdotenv) does: last
@@ -279,8 +285,22 @@ export_database() {
         --hex-blob             # binary columns survive intact
         --default-character-set=utf8mb4
     )
-    [[ "$help" == *--set-gtid-purged* ]] && opts+=(--set-gtid-purged=OFF)
-    [[ "$help" == *--column-statistics* ]] && opts+=(--column-statistics=0)
+    local common=(--no-tablespaces --default-character-set=utf8mb4)
+    [[ "$help" == *--set-gtid-purged* ]] && common+=(--set-gtid-purged=OFF)
+    [[ "$help" == *--column-statistics* ]] && common+=(--column-statistics=0)
+    opts+=("${common[@]}")
+
+    # Tables whose rows are skipped: left out of the main dump, then their
+    # structure (and triggers) appended by a second, --no-data dump, so a
+    # restore still has the table, just empty.
+    local t
+    for t in "${SKIP_DATA[@]}"; do
+        if ! valid_db_name "$t"; then
+            print_error "Unsupported characters in table name: $t"
+            exit 1
+        fi
+        opts+=(--ignore-table="$DB_DATABASE.$t")
+    done
 
     (umask 077; mkdir -p "$backup_dir")
 
@@ -292,11 +312,26 @@ export_database() {
     print_info "Starting database export..."
     print_info "Database: $DB_DATABASE"
     print_info "Backup file: $backup_file"
+    if [[ ${#SKIP_DATA[@]} -gt 0 ]]; then
+        print_warning "Rows NOT exported (structure only): ${SKIP_DATA[*]}"
+    fi
 
     # Write to .part and rename only when complete, so a failed or interrupted
     # export never leaves a file that looks like a good backup.
     trap 'rm -f "$PART_FILE"' EXIT
-    if ! (umask 077; mysqldump --defaults-file="$CNF_FILE" "${opts[@]}" "$DB_DATABASE" | gzip > "$PART_FILE"); then
+    # "&&", not ";": the structure dump must not run after a failed main dump,
+    # or its own "-- Dump completed" line would end the file and hide the
+    # failure from the completeness check.
+    if ! (
+        umask 077
+        {
+            mysqldump --defaults-file="$CNF_FILE" "${opts[@]}" "$DB_DATABASE" &&
+            if [[ ${#SKIP_DATA[@]} -gt 0 ]]; then
+                mysqldump --defaults-file="$CNF_FILE" "${common[@]}" --no-data --triggers \
+                    "$DB_DATABASE" "${SKIP_DATA[@]}"
+            fi
+        } | gzip > "$PART_FILE"
+    ); then
         print_error "Database export failed (see the mysqldump error above)"
         exit 1
     fi
@@ -363,6 +398,7 @@ IMPORT_FILE=""
 CNF_FILE=""
 DB_DATABASE=""
 PART_FILE=""
+SKIP_DATA=()
 
 require_value() {
     if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
@@ -387,6 +423,11 @@ while [[ $# -gt 0 ]]; do
         -b|--backup-dir)
             require_value "$@"
             BACKUP_DIR="$2"
+            shift 2
+            ;;
+        -s|--skip-data)
+            require_value "$@"
+            SKIP_DATA+=("$2")
             shift 2
             ;;
         -y|--yes)
