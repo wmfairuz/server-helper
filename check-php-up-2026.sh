@@ -10,10 +10,9 @@
 #   Add -y to skip the confirmation prompt.
 # Every mode re-runs the check afterwards.
 #
-# Upstream fix is the PHP security release of 2026-10-21 14:00 UTC. Every branch
-# release up to and including the 2026-09-24 releases below is treated as vulnerable.
-# Once php.net publishes the fixed versions, confirm they are the next patch release
-# on each branch (override with LAST_VULN_8_x=... env vars if not).
+# Fixed upstream on 2026-10-21 in PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12, so every
+# release up to the ones below is vulnerable. PHP <= 8.1 has no upstream fix; only
+# distro/vendor backports (detected via the package changelog) count as patched.
 #
 # Last line of output is machine-readable, for collecting results across servers:
 #   RESULT|<host>|<status>|<details>
@@ -108,8 +107,13 @@ do_mitigate() {
     echo "  Will write ${DROPIN} into:"; echo "$dirs" | sed 's/^/    /'
     confirm "  Proceed?" || { echo "  Skipped."; echo; return; }
     for d in $dirs; do
-        printf '; PHP-UP stopgap (%s) — remove once PHP is patched:\n;   sudo %s --unmitigate\nsession.upload_progress.enabled = Off\n' \
-            "$CVES" "$(readlink -f "$0")" > "$d/$DROPIN"
+        # Per the php.net advisory (CVE-2026-109619). fatal_error_backtraces only exists
+        # on PHP 8.5+; older versions silently ignore it.
+        printf '%s\n' \
+            "; PHP-UP stopgap (${CVES}) — remove once PHP is patched:" \
+            ";   sudo $(readlink -f "$0") --unmitigate" \
+            "session.upload_progress.enabled = Off" \
+            "fatal_error_backtraces = Off" > "$d/$DROPIN"
         echo -e "  ${GREEN}wrote $d/$DROPIN${NC}"
     done
     for bin in "${BINS[@]}"; do
@@ -117,8 +121,11 @@ do_mitigate() {
             "$bin" -t >/dev/null 2>&1 || { echo -e "  ${RED}$bin -t failed — not reloading.${NC}"; return; } ;;
         esac
     done
-    bounce_php reload
-    echo -e "  ${YELLOW}Note: this only closes the upload-progress path. Upgrade PHP when the fix ships.${NC}\n"
+    # Advisory says restart every worker — a reload is not enough
+    bounce_php restart
+    echo -e "  ${YELLOW}Note: this only reduces exposure to CVE-2026-109619. CVE-2026-109618 stays open"
+    echo -e "  until PHP is upgraded (php.net's other stopgaps — memory_limit=-1, low post_max_size —"
+    echo -e "  can break apps, so they are not applied here).${NC}\n"
 }
 
 do_unmitigate() {
@@ -132,7 +139,7 @@ do_unmitigate() {
     echo "$files" | sed 's/^/    /'
     confirm "  Remove these?" || { echo "  Skipped."; echo; return; }
     rm -f $files
-    bounce_php reload
+    bounce_php restart
     echo
 }
 
@@ -149,7 +156,8 @@ do_upgrade() {
     upgradable=$(apt list --upgradable 2>/dev/null | cut -d/ -f1 | grep -xF -f <(echo "$installed"))
     if [ -z "$upgradable" ]; then
         echo -e "  ${YELLOW}No PHP updates available from your apt sources yet.${NC}"
-        echo "  The upstream fix ships 2026-10-21 14:00 UTC; distro / Ondrej PPA builds can lag by hours."
+        echo "  Upstream fixed 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 on 2026-10-21; distro and Ondrej"
+        echo "  builds can lag by hours. Re-run --upgrade later."
         echo "  Until then consider: sudo $(readlink -f "$0") --mitigate"
         echo
         return
@@ -276,7 +284,7 @@ echo -e "${BOLD}=== VERDICT ===${NC}"
 if [ "$ANY_VULN" = "yes" ] && [ -n "$SERVING" ]; then
     STATUS="VULNERABLE"
     echo -e "${RED}A vulnerable PHP build is installed and PHP is served over HTTP (${SERVING% }).${NC}"
-    echo "  → Upgrade PHP as soon as the 2026-10-21 14:00 UTC release reaches your apt sources:"
+    echo "  → Upgrade to 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 (or a distro backport) as soon as your apt sources have it:"
     echo "      sudo $(readlink -f "$0") --upgrade"
     if [ -n "$OVR" ] && echo "$OVR" | grep -q "$DROPIN"; then
         echo -e "  → Stopgap ${GREEN}already applied${NC} (${DROPIN}); it only blocks the upload-progress path."
