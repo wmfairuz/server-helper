@@ -3,7 +3,8 @@
 # "PHP-UP" checker: CVE-2026-109618 / CVE-2026-109619 (PHP session upload-progress RCE)
 #
 # Usage:
-#   sudo ./check-php-up-2026.sh              # check only — makes no changes
+#   sudo ./check-php-up-2026.sh              # check only — makes no changes; reports where each
+#                                            # PHP came from and whether apt already has the fix
 #   sudo ./check-php-up-2026.sh --mitigate   # stopgap: session.upload_progress.enabled=Off, reload PHP
 #   sudo ./check-php-up-2026.sh --unmitigate # remove the stopgap again
 #   sudo ./check-php-up-2026.sh --upgrade    # apt-upgrade installed PHP packages, restart PHP
@@ -52,6 +53,65 @@ echo -e "${BOLD}=== PHP-UP (${CVES}) checker — ${HOST} — $(date '+%Y-%m-%d %
 
 # a <= b, version-wise
 ver_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
+
+OS_NAME=$(. /etc/os-release 2>/dev/null; echo "${NAME:-Linux}" | awk '{print $1}')
+
+# Where a PHP build came from: path for panels/vendors, package version for apt
+php_source() {
+    local bin="$1" pkg="$2" pv="$3"
+    case "$bin" in
+        /opt/cpanel/*)     echo "cPanel"; return ;;
+        /opt/plesk/*)      echo "Plesk"; return ;;
+        /opt/remi/*)       echo "Remi"; return ;;
+        /usr/local/lsws/*) echo "LiteSpeed"; return ;;
+    esac
+    [ -z "$pkg" ] && { echo "custom"; return; }
+    case "$pv" in
+        *deb.sury.org*|*+0~[0-9]*) echo "Ondrej" ;;   # PPA (Ubuntu) / packages.sury.org (Debian)
+        *ubuntu*)                  echo "Ubuntu" ;;
+        *)                         echo "$OS_NAME" ;;
+    esac
+}
+
+# Hours since the last `apt update`. The list files carry the repo's own
+# timestamps, so use apt's cache, which every update rebuilds.
+apt_update_age() {
+    local newest
+    newest=$(stat -c %Y /var/cache/apt/pkgcache.bin /var/lib/apt/periodic/update-success-stamp \
+                2>/dev/null | sort -n | tail -1)
+    # No cache (e.g. Docker images): fall back to when list files were last rewritten
+    [ -z "$newest" ] && newest=$(stat -c %Z /var/lib/apt/lists/*_InRelease 2>/dev/null | sort -n | tail -1)
+    [ -n "$newest" ] && echo $(( ($(date +%s) - newest) / 3600 ))
+}
+
+# Does the apt candidate of php<MM>-common name the CVEs in its changelog?
+# Builds that keep an old upstream version but carry the fix — confirmed from
+# their changelogs on 2026-10-21. Anything >= these (same branch/source) is fixed.
+known_fixed_build() {
+    case "$1/$2" in
+        8.1/Ubuntu) echo "8.1.2-1ubuntu2.28" ;;        # 22.04 jammy-security
+        8.3/Ubuntu) echo "8.3.6-0ubuntu0.24.04.13" ;;  # 24.04 noble-security
+        8.5/Ubuntu) echo "8.5.4-0ubuntu1.5" ;;         # 26.04 resolute-security
+        8.1/Ondrej) echo "8.1.34-9" ;;                 # backport from 8.2.35
+    esac
+}
+
+# Sets FIXED to yes / no / unknown (no network, or a repo without changelogs
+# such as a PPA). Not called in $(...) so the cache survives.
+declare -A CL_CACHE=()
+candidate_has_fix() {
+    local mm="$1" out
+    if [ -z "${CL_CACHE[$mm]:-}" ]; then
+        # A failed fetch prints "Err: ... 404" on stdout, so trust the exit code;
+        # changelogs.ubuntu.com often lags new security uploads by hours.
+        if ! out=$(timeout 25 apt-get changelog "php${mm}-common" 2>/dev/null); then
+            CL_CACHE[$mm]="unknown"
+        elif echo "$out" | grep -qE 'CVE-2026-10961[89]'; then CL_CACHE[$mm]="yes"
+        else CL_CACHE[$mm]="no"
+        fi
+    fi
+    FIXED="${CL_CACHE[$mm]}"
+}
 
 confirm() {
     [ "$ASSUME_YES" = "yes" ] && return 0
@@ -223,6 +283,7 @@ echo
 # ── 3. Per-binary version + patch state ────────────────────────────────
 echo -e "${BOLD}--- PHP builds ---${NC}"
 ANY_VULN="no"; ANY_UNKNOWN="no"; DETAILS=""
+declare -A TODO_UPGRADE=() TODO_MAYBE=() TODO_WAIT=() TODO_MANUAL=()
 for bin in "${BINS[@]}"; do
     VER=$("$bin" -v 2>/dev/null | head -1 | grep -oE 'PHP [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}')
     if [ -z "$VER" ]; then
@@ -247,23 +308,68 @@ for bin in "${BINS[@]}"; do
         *)   LAST="" ;;
     esac
 
-    if [ "$BACKPORT" = "yes" ]; then
+    if [ -n "$LAST" ] && ! ver_le "$VER" "$LAST"; then
+        STATE="PATCHED (upstream fix)"; COLOR="$GREEN"
+    elif [ "$BACKPORT" = "yes" ]; then
         STATE="PATCHED (distro backport)"; COLOR="$GREEN"
     elif [ -n "$LAST" ]; then
-        if ver_le "$VER" "$LAST"; then
-            STATE="VULNERABLE (<= $LAST)"; COLOR="$RED"; ANY_VULN="yes"
-        else
-            STATE="patched (> $LAST)"; COLOR="$GREEN"
-        fi
+        STATE="VULNERABLE (<= $LAST)"; COLOR="$RED"; ANY_VULN="yes"
     elif ver_le "$MM" "8.1"; then
         STATE="VULNERABLE — EOL branch, no upstream fix"; COLOR="$RED"; ANY_VULN="yes"
     else
         STATE="UNKNOWN branch ($MM) — check manually"; COLOR="$YELLOW"; ANY_UNKNOWN="yes"
     fi
 
-    printf "  %-45s %-8s upload_progress=%-4s " "$bin" "$VER" "${UP:-?}"
+    PKG=$(dpkg -S "$bin" 2>/dev/null | grep -v '^diversion' | head -1 | cut -d: -f1)
+    PKGVER=""
+    [ -n "$PKG" ] && PKGVER=$(dpkg-query -W -f='${Version}' "$PKG" 2>/dev/null)
+    SRC=$(php_source "$bin" "$PKG" "$PKGVER")
+
+    printf "  %-32s %-8s %-10s upload_progress=%-4s " "$bin" "$VER" "$SRC" "${UP:-?}"
     echo -e "${COLOR}${STATE}${NC}"
-    DETAILS+="${VER}:${STATE%% *}:up=${UP:-?} "
+    DETAILS+="${VER}:${STATE%% *}:${SRC}:up=${UP:-?} "
+
+    # Vulnerable: can it be fixed right now? (reads apt's local lists — no network)
+    case "$STATE" in VULNERABLE*) ;; *) continue ;; esac
+    LABEL="php${MM} (${SRC})"
+    CAND=""
+    [ -n "$PKG" ] && CAND=$(apt-cache policy "$PKG" 2>/dev/null | awk '/Candidate:/{print $2}')
+    if [ -z "$PKG" ] || [ -z "$CAND" ]; then
+        case "$SRC" in
+            cPanel) HOW="update ea-php${MM//./} via WHM → EasyApache 4" ;;
+            Plesk)  HOW="update via Plesk → Tools & Settings → Updates" ;;
+            Remi)   HOW="sudo dnf upgrade 'php*'" ;;
+            *)      HOW="not from a package — rebuild / pull a newer image" ;;
+        esac
+        echo -e "      ${YELLOW}↳ not apt-managed: ${HOW}${NC}"
+        TODO_MANUAL[$LABEL]="$HOW"
+    elif [ "$CAND" != "(none)" ] && dpkg --compare-versions "$CAND" gt "$PKGVER"; then
+        CUP=$(echo "$CAND" | sed 's/^[0-9]*://' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+        if [ -n "$LAST" ] && ! ver_le "$CUP" "$LAST"; then
+            FIXED="yes"                         # newer upstream release, e.g. 8.3.36
+        else
+            KNOWN=$(known_fixed_build "$MM" "$SRC")   # same/old upstream: only a backport helps
+            if [ -n "$KNOWN" ]; then
+                dpkg --compare-versions "$CAND" ge "$KNOWN" && FIXED="yes" || FIXED="no"
+            else
+                candidate_has_fix "$MM"
+            fi
+        fi
+        case "$FIXED" in
+            yes)
+                echo -e "      ${GREEN}↳ fix available in apt: ${CAND}${NC}"
+                TODO_UPGRADE[$LABEL]="$CAND" ;;
+            no)
+                echo -e "      ${YELLOW}↳ update ${CAND} is in apt but does NOT contain the fix yet${NC}"
+                TODO_WAIT[$LABEL]=1 ;;
+            *)
+                echo -e "      ${YELLOW}↳ update available in apt: ${CAND} — can't confirm it has the fix; upgrade, then re-check${NC}"
+                TODO_MAYBE[$LABEL]="$CAND" ;;
+        esac
+    else
+        echo -e "      ${YELLOW}↳ no fix in apt yet${NC}"
+        TODO_WAIT[$LABEL]=1
+    fi
 done
 echo
 
@@ -281,22 +387,52 @@ echo
 
 # ── 5. Verdict ────────────────────────────────────────────────────────
 echo -e "${BOLD}=== VERDICT ===${NC}"
-if [ "$ANY_VULN" = "yes" ] && [ -n "$SERVING" ]; then
-    STATUS="VULNERABLE"
-    echo -e "${RED}A vulnerable PHP build is installed and PHP is served over HTTP (${SERVING% }).${NC}"
-    echo "  → Upgrade to 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 (or a distro backport) as soon as your apt sources have it:"
-    echo "      sudo $(readlink -f "$0") --upgrade"
-    if [ -n "$OVR" ] && echo "$OVR" | grep -q "$DROPIN"; then
-        echo -e "  → Stopgap ${GREEN}already applied${NC} (${DROPIN}); it only blocks the upload-progress path."
+SELF=$(readlink -f "$0")
+NEXT="none"
+if [ "$ANY_VULN" = "yes" ]; then
+    if [ -n "$SERVING" ]; then
+        STATUS="VULNERABLE"
+        echo -e "${RED}A vulnerable PHP build is installed and PHP is served over HTTP (${SERVING% }).${NC}"
     else
-        echo "  → Stopgap until then (only blocks the upload-progress path; multipart path may remain):"
-        echo "      sudo $(readlink -f "$0") --mitigate"
+        STATUS="VULNERABLE-CLI-ONLY"
+        echo -e "${YELLOW}Vulnerable PHP build present, but nothing serves PHP over HTTP. Practical risk: LOW.${NC}"
     fi
-    RC=1
-elif [ "$ANY_VULN" = "yes" ]; then
-    STATUS="VULNERABLE-CLI-ONLY"
-    echo -e "${YELLOW}Vulnerable PHP build present, but nothing serves PHP over HTTP. Practical risk: LOW.${NC}"
-    echo "  → Upgrade anyway; re-check if a web server is added later."
+    echo
+    if [ ${#TODO_UPGRADE[@]} -gt 0 ]; then
+        NEXT="upgrade-now"
+        echo -e "  ${GREEN}•  Fix is in apt now${NC} for: ${!TODO_UPGRADE[*]}"
+        echo "       sudo $SELF --upgrade"
+    fi
+    if [ ${#TODO_MAYBE[@]} -gt 0 ]; then
+        [ "$NEXT" = "none" ] && NEXT="upgrade-maybe"
+        echo -e "  ${YELLOW}•  Update in apt that may contain the fix${NC} for: ${!TODO_MAYBE[*]}"
+        echo "       sudo $SELF --upgrade   # the check afterwards says for sure"
+    fi
+    if [ ${#TODO_WAIT[@]} -gt 0 ]; then
+        [ "$NEXT" = "none" ] && NEXT="wait"
+        echo -e "  ${YELLOW}•  No fix in apt yet${NC} for: ${!TODO_WAIT[*]}"
+        AGE=$(apt_update_age)
+        if [ -z "$AGE" ] || [ "$AGE" -ge 1 ]; then
+            echo "       apt was last updated ${AGE:-?}h ago — refresh first, then re-run this check:"
+            echo "         sudo apt update"
+        else
+            echo "       apt was updated <1h ago. Wait for the package to be published, then:"
+            echo "         sudo apt update   # and re-run this check"
+        fi
+    fi
+    if [ ${#TODO_MANUAL[@]} -gt 0 ]; then
+        [ "$NEXT" = "none" ] && NEXT="manual"
+        echo -e "  ${YELLOW}•  Not apt-managed${NC} — update these yourself:"
+        for k in "${!TODO_MANUAL[@]}"; do echo "       $k: ${TODO_MANUAL[$k]}"; done
+    fi
+    if [ -n "$SERVING" ]; then
+        if [ -n "$OVR" ] && echo "$OVR" | grep -q "$DROPIN"; then
+            echo -e "  •  Stopgap ${GREEN}already applied${NC} (${DROPIN}) — keep it until the verdict says PATCHED."
+        else
+            echo "  •  Until upgraded, apply the stopgap (partial protection, CVE-2026-109619 only):"
+            echo "       sudo $SELF --mitigate"
+        fi
+    fi
     RC=1
 elif [ "$ANY_UNKNOWN" = "yes" ]; then
     STATUS="UNKNOWN"
@@ -306,11 +442,11 @@ else
     STATUS="PATCHED"
     echo -e "${GREEN}All PHP builds are past the last vulnerable release (or carry a backport).${NC}"
     if [ -n "$OVR" ] && echo "$OVR" | grep -q "$DROPIN"; then
-        echo "  → Stopgap no longer needed: sudo $(readlink -f "$0") --unmitigate"
+        echo "  → Stopgap no longer needed: sudo $SELF --unmitigate"
     fi
     RC=0
 fi
 echo
 echo "Authoritative status: https://www.php.net/archive/2026.php"
-echo "RESULT|${HOST}|${STATUS}|serving=${SERVING:-none} ${DETAILS% }"
+echo "RESULT|${HOST}|${STATUS}|next=${NEXT} serving=${SERVING:-none} ${DETAILS% }"
 exit $RC
