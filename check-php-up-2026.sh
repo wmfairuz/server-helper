@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 #
 # "PHP-UP" checker: CVE-2026-109618 / CVE-2026-109619 (PHP session upload-progress RCE)
-# Read-only: makes no changes to the system.
+#
+# Usage:
+#   sudo ./check-php-up-2026.sh              # check only — makes no changes
+#   sudo ./check-php-up-2026.sh --mitigate   # stopgap: session.upload_progress.enabled=Off, reload PHP
+#   sudo ./check-php-up-2026.sh --unmitigate # remove the stopgap again
+#   sudo ./check-php-up-2026.sh --upgrade    # apt-upgrade installed PHP packages, restart PHP
+#   Add -y to skip the confirmation prompt.
+# Every mode re-runs the check afterwards.
 #
 # Upstream fix is the PHP security release of 2026-10-21 14:00 UTC. Every branch
 # release up to and including the 2026-09-24 releases below is treated as vulnerable.
@@ -20,13 +27,143 @@ LAST_VULN_8_3="${LAST_VULN_8_3:-8.3.35}"
 LAST_VULN_8_4="${LAST_VULN_8_4:-8.4.26}"
 LAST_VULN_8_5="${LAST_VULN_8_5:-8.5.11}"
 
+DROPIN="99-php-up-mitigation.ini"
+
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 HOST=$(hostname -f 2>/dev/null || hostname)
+
+ACTION="check"; ASSUME_YES="no"
+for arg in "$@"; do
+    case "$arg" in
+        --mitigate)   ACTION="mitigate" ;;
+        --unmitigate) ACTION="unmitigate" ;;
+        --upgrade)    ACTION="upgrade" ;;
+        -y|--yes)     ASSUME_YES="yes" ;;
+        -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
+        *)            echo "Unknown option: $arg (see --help)"; exit 2 ;;
+    esac
+done
+
+if [ "$ACTION" != "check" ] && [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}--${ACTION} changes the system — run it with sudo.${NC}"
+    exit 2
+fi
 
 echo -e "${BOLD}=== PHP-UP (${CVES}) checker — ${HOST} — $(date '+%Y-%m-%d %H:%M') ===${NC}\n"
 
 # a <= b, version-wise
 ver_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
+
+confirm() {
+    [ "$ASSUME_YES" = "yes" ] && return 0
+    read -r -p "$1 [y/N] " ans < /dev/tty
+    [[ "$ans" =~ ^[Yy]$ ]]
+}
+
+# Reload (ini change) or restart (new binary) everything that serves PHP
+bounce_php() {
+    local how="$1" units u
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo -e "  ${YELLOW}systemctl not found — ${how} PHP-FPM / the web server yourself.${NC}"
+        return
+    fi
+    units=$(systemctl list-units --type=service --state=running --plain --no-legend \
+                'php*-fpm*' 'lsws*' 2>/dev/null | awk '{print $1}')
+    ls /etc/apache2/mods-enabled/php*.load >/dev/null 2>&1 && units+=$'\napache2.service'
+    ls /etc/httpd/conf.modules.d/*php*.conf >/dev/null 2>&1 && units+=$'\nhttpd.service'
+    for u in $units; do
+        if systemctl "$how" "$u" 2>/dev/null; then
+            echo -e "  ${GREEN}${how}ed ${u}${NC}"
+        else
+            echo -e "  ${RED}failed to ${how} ${u} — check: systemctl status ${u}${NC}"
+        fi
+    done
+    if [ -z "$units" ]; then
+        echo "  No running PHP-FPM / LiteSpeed / Apache-mod_php systemd service to ${how}."
+        for p in /proc/[0-9]*/cmdline; do tr '\0' ' ' < "$p"; echo; done 2>/dev/null \
+            | grep -q -e 'php-fpm: master' -e lsphp \
+            && echo -e "  ${RED}But PHP is running outside systemd — ${how} it yourself or the change won't apply.${NC}"
+    fi
+}
+
+# ini scan dirs of every web-facing SAPI (skips CLI-only dirs)
+ini_scan_dirs() {
+    local bin dir
+    for bin in "${BINS[@]}"; do
+        dir=$("$bin" -i 2>/dev/null | grep -m1 'Scan this dir for additional .ini files' | awk '{print $NF}')
+        [ -d "$dir" ] || continue
+        [[ "$dir" == */cli/* || "$dir" == */cli ]] && continue
+        echo "$dir"
+    done | sort -u
+}
+
+do_mitigate() {
+    echo -e "${BOLD}--- Applying stopgap: session.upload_progress.enabled = Off ---${NC}"
+    local dirs d bin
+    dirs=$(ini_scan_dirs)
+    if [ -z "$dirs" ]; then
+        echo -e "  ${RED}No web SAPI ini scan dir found — set it in php.ini by hand.${NC}"
+        return
+    fi
+    echo "  Will write ${DROPIN} into:"; echo "$dirs" | sed 's/^/    /'
+    confirm "  Proceed?" || { echo "  Skipped."; echo; return; }
+    for d in $dirs; do
+        printf '; PHP-UP stopgap (%s) — remove once PHP is patched:\n;   sudo %s --unmitigate\nsession.upload_progress.enabled = Off\n' \
+            "$CVES" "$(readlink -f "$0")" > "$d/$DROPIN"
+        echo -e "  ${GREEN}wrote $d/$DROPIN${NC}"
+    done
+    for bin in "${BINS[@]}"; do
+        case "$bin" in *php-fpm*)
+            "$bin" -t >/dev/null 2>&1 || { echo -e "  ${RED}$bin -t failed — not reloading.${NC}"; return; } ;;
+        esac
+    done
+    bounce_php reload
+    echo -e "  ${YELLOW}Note: this only closes the upload-progress path. Upgrade PHP when the fix ships.${NC}\n"
+}
+
+do_unmitigate() {
+    echo -e "${BOLD}--- Removing stopgap ---${NC}"
+    local files
+    files=$(ls /etc/php/*/*/conf.d/$DROPIN /usr/local/etc/php/conf.d/$DROPIN \
+               /usr/local/lsws/lsphp*/etc/php/*/mods-available/$DROPIN \
+               /opt/cpanel/ea-php*/root/etc/php.d/$DROPIN /opt/plesk/php/*/etc/php.d/$DROPIN \
+               /etc/opt/remi/php*/php.d/$DROPIN 2>/dev/null)
+    [ -z "$files" ] && { echo -e "  No ${DROPIN} found — nothing to remove.\n"; return; }
+    echo "$files" | sed 's/^/    /'
+    confirm "  Remove these?" || { echo "  Skipped."; echo; return; }
+    rm -f $files
+    bounce_php reload
+    echo
+}
+
+do_upgrade() {
+    echo -e "${BOLD}--- Upgrading PHP packages ---${NC}"
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo -e "  ${RED}apt-get not found — --upgrade supports Debian/Ubuntu only. Upgrade via your panel/vendor.${NC}\n"
+        return
+    fi
+    echo "  apt-get update ..."
+    apt-get update -qq >/dev/null 2>&1 || echo -e "  ${YELLOW}apt-get update reported errors — continuing.${NC}"
+    local installed upgradable
+    installed=$(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 'php*' 'lsphp*' 2>/dev/null | awk '$1=="ii"{print $2}')
+    upgradable=$(apt list --upgradable 2>/dev/null | cut -d/ -f1 | grep -xF -f <(echo "$installed"))
+    if [ -z "$upgradable" ]; then
+        echo -e "  ${YELLOW}No PHP updates available from your apt sources yet.${NC}"
+        echo "  The upstream fix ships 2026-10-21 14:00 UTC; distro / Ondrej PPA builds can lag by hours."
+        echo "  Until then consider: sudo $(readlink -f "$0") --mitigate"
+        echo
+        return
+    fi
+    echo "  Upgradable PHP packages:"
+    apt list --upgradable 2>/dev/null | grep -F -f <(echo "$upgradable" | sed 's|$|/|') | sed 's/^/    /'
+    confirm "  Upgrade these and restart PHP?" || { echo "  Skipped."; echo; return; }
+    # keep existing config files (php.ini, pool.d) untouched
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade \
+        -o Dpkg::Options::=--force-confold $upgradable \
+        || { echo -e "  ${RED}apt-get install failed — see output above.${NC}"; return; }
+    bounce_php restart
+    echo
+}
 
 # ── 1. Find every PHP binary (CLI, FPM, LiteSpeed, cPanel/Plesk/Remi) ──
 CANDIDATES=$(
@@ -54,6 +191,12 @@ if [ ${#BINS[@]} -eq 0 ]; then
     echo "RESULT|${HOST}|NO-PHP|-"
     exit 0
 fi
+
+case "$ACTION" in
+    mitigate)   do_mitigate ;;
+    unmitigate) do_unmitigate ;;
+    upgrade)    do_upgrade ;;
+esac
 
 # ── 2. What is actually serving PHP over HTTP? ─────────────────────────
 echo -e "${BOLD}--- Web-facing PHP processes ---${NC}"
@@ -133,10 +276,14 @@ echo -e "${BOLD}=== VERDICT ===${NC}"
 if [ "$ANY_VULN" = "yes" ] && [ -n "$SERVING" ]; then
     STATUS="VULNERABLE"
     echo -e "${RED}A vulnerable PHP build is installed and PHP is served over HTTP (${SERVING% }).${NC}"
-    echo "  → Upgrade PHP as soon as the 2026-10-21 release lands, e.g. (Ondrej PPA):"
-    echo "      sudo apt update && sudo apt install --only-upgrade 'php*' && sudo systemctl restart 'php*-fpm'"
-    echo "  → Stopgap until then: session.upload_progress.enabled = Off in the FPM php.ini, then restart FPM."
-    echo "    This only blocks the upload-progress path; the multipart-parser path may remain."
+    echo "  → Upgrade PHP as soon as the 2026-10-21 14:00 UTC release reaches your apt sources:"
+    echo "      sudo $(readlink -f "$0") --upgrade"
+    if [ -n "$OVR" ] && echo "$OVR" | grep -q "$DROPIN"; then
+        echo -e "  → Stopgap ${GREEN}already applied${NC} (${DROPIN}); it only blocks the upload-progress path."
+    else
+        echo "  → Stopgap until then (only blocks the upload-progress path; multipart path may remain):"
+        echo "      sudo $(readlink -f "$0") --mitigate"
+    fi
     RC=1
 elif [ "$ANY_VULN" = "yes" ]; then
     STATUS="VULNERABLE-CLI-ONLY"
@@ -150,6 +297,9 @@ elif [ "$ANY_UNKNOWN" = "yes" ]; then
 else
     STATUS="PATCHED"
     echo -e "${GREEN}All PHP builds are past the last vulnerable release (or carry a backport).${NC}"
+    if [ -n "$OVR" ] && echo "$OVR" | grep -q "$DROPIN"; then
+        echo "  → Stopgap no longer needed: sudo $(readlink -f "$0") --unmitigate"
+    fi
     RC=0
 fi
 echo
