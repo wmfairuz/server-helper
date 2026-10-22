@@ -222,7 +222,12 @@ do_upgrade() {
         return
     fi
     echo "  apt-get update ..."
-    apt-get update -qq >/dev/null 2>&1 || echo -e "  ${YELLOW}apt-get update reported errors — continuing.${NC}"
+    # Ondrej renamed his PPA's Label; apt refuses to refresh it (leaving a stale
+    # index whose files 404) until that change is accepted. Accept Label only.
+    local upd_err
+    upd_err=$(apt-get update -qq -o Acquire::AllowReleaseInfoChange::Label=true 2>&1 >/dev/null) \
+        || echo -e "  ${YELLOW}apt-get update reported errors — continuing:${NC}"
+    [ -n "$upd_err" ] && echo "$upd_err" | grep -E '^(E|W):' | sed -n '1,5s/^/    /p'
     local installed upgradable
     installed=$(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 'php*' 'lsphp*' 2>/dev/null | awk '$1=="ii"{print $2}')
     upgradable=$(apt list --upgradable 2>/dev/null | cut -d/ -f1 | grep -xF -f <(echo "$installed"))
@@ -437,10 +442,10 @@ if [ "$ANY_VULN" = "yes" ]; then
             echo "         $PFB_INSTALL"
         elif [ -z "$AGE" ] || [ "$AGE" -ge 1 ]; then
             echo "       apt was last updated ${AGE:-?}h ago — refresh first, then re-run this check:"
-            echo "         sudo apt update"
+            echo "         sudo apt-get update -o Acquire::AllowReleaseInfoChange::Label=true"
         else
             echo "       apt was updated <1h ago. Wait for the package to be published, then:"
-            echo "         sudo apt update   # and re-run this check"
+            echo "         sudo apt-get update -o Acquire::AllowReleaseInfoChange::Label=true   # then re-run this check"
         fi
     fi
     if [ ${#TODO_MANUAL[@]} -gt 0 ]; then
