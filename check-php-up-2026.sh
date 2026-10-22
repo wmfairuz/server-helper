@@ -93,6 +93,8 @@ known_fixed_build() {
         8.3/Ubuntu) echo "8.3.6-0ubuntu0.24.04.13" ;;  # 24.04 noble-security
         8.5/Ubuntu) echo "8.5.4-0ubuntu1.5" ;;         # 26.04 resolute-security
         8.1/Ondrej) echo "8.1.34-9" ;;                 # backport from 8.2.35
+        8.0/Ondrej) echo "1:8.0.30-25" ;;              # backport from 8.2.35
+        7.4/Ondrej) echo "1:7.4.33-31" ;;              # backport from 8.2.35
     esac
 }
 
