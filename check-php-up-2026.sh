@@ -95,6 +95,11 @@ known_fixed_build() {
         8.1/Ondrej) echo "8.1.34-9" ;;                 # backport from 8.2.35
         8.0/Ondrej) echo "1:8.0.30-25" ;;              # backport from 8.2.35
         7.4/Ondrej) echo "1:7.4.33-31" ;;              # backport from 8.2.35
+        7.3/Ondrej) echo "7.3.33-35" ;;                # backport from 8.2.35
+        7.2/Ondrej) echo "7.2.34-66" ;;                # backport from 8.2.35
+        7.1/Ondrej) echo "7.1.33-80" ;;                # backport from 8.2.35
+        7.0/Ondrej) echo "7.0.33-92" ;;                # backport from 8.2.35
+        5.6/Ondrej) echo "5.6.40-104" ;;               # backport from 8.2.35
     esac
 }
 
