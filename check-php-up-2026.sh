@@ -55,6 +55,9 @@ echo -e "${BOLD}=== PHP-UP (${CVES}) checker — ${HOST} — $(date '+%Y-%m-%d %
 ver_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
 
 OS_NAME=$(. /etc/os-release 2>/dev/null; echo "${NAME:-Linux}" | awk '{print $1}')
+OS_CODENAME=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}")
+# Ondrej stopped publishing for 20.04 in June 2025; this repo rebuilds his fixes
+PFB_INSTALL="curl -fsSL https://raw.githubusercontent.com/wmfairuz/php-focal-backports/main/install.sh | sudo bash"
 
 # Where a PHP build came from: path for panels/vendors, package version for apt
 php_source() {
@@ -67,6 +70,8 @@ php_source() {
     esac
     [ -z "$pkg" ] && { echo "custom"; return; }
     case "$pv" in
+        *+pfb[0-9]*)               echo "pfb-repo" ;; # wmfairuz/php-focal-backports rebuilds
+        *+php7.[0-9]*~*)           echo "Niek/php7" ;;
         *deb.sury.org*|*+0~[0-9]*) echo "Ondrej" ;;   # PPA (Ubuntu) / packages.sury.org (Debian)
         *ubuntu*)                  echo "Ubuntu" ;;
         *)                         echo "$OS_NAME" ;;
@@ -221,6 +226,13 @@ do_upgrade() {
     local installed upgradable
     installed=$(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 'php*' 'lsphp*' 2>/dev/null | awk '$1=="ii"{print $2}')
     upgradable=$(apt list --upgradable 2>/dev/null | cut -d/ -f1 | grep -xF -f <(echo "$installed"))
+    if [ -z "$upgradable" ] && [ "$OS_CODENAME" = "focal" ]; then
+        echo -e "  ${YELLOW}No PHP updates available — and none will come from Ondrej's PPA on Ubuntu 20.04.${NC}"
+        echo "  Get the patched packages (one command, asks before changing anything):"
+        echo "    $PFB_INSTALL"
+        echo
+        return
+    fi
     if [ -z "$upgradable" ]; then
         echo -e "  ${YELLOW}No PHP updates available from your apt sources yet.${NC}"
         echo "  Upstream fixed 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 on 2026-10-21; distro and Ondrej"
@@ -419,7 +431,11 @@ if [ "$ANY_VULN" = "yes" ]; then
         [ "$NEXT" = "none" ] && NEXT="wait"
         echo -e "  ${YELLOW}•  No fix in apt yet${NC} for: ${!TODO_WAIT[*]}"
         AGE=$(apt_update_age)
-        if [ -z "$AGE" ] || [ "$AGE" -ge 1 ]; then
+        if [ "$OS_CODENAME" = "focal" ]; then
+            echo "       Ubuntu 20.04: Ondrej's PPA no longer publishes here, so waiting won't help."
+            echo "       Get the patched packages (one command, asks before changing anything):"
+            echo "         $PFB_INSTALL"
+        elif [ -z "$AGE" ] || [ "$AGE" -ge 1 ]; then
             echo "       apt was last updated ${AGE:-?}h ago — refresh first, then re-run this check:"
             echo "         sudo apt update"
         else
