@@ -56,8 +56,13 @@ ver_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
 
 OS_NAME=$(. /etc/os-release 2>/dev/null; echo "${NAME:-Linux}" | awk '{print $1}')
 OS_CODENAME=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}")
-# Ondrej stopped publishing for 20.04 in June 2025; this repo rebuilds his fixes
-PFB_INSTALL="curl -fsSL https://raw.githubusercontent.com/wmfairuz/php-focal-backports/main/install.sh | sudo bash"
+# Ondrej no longer publishes for 20.04 (since June 2025) or 18.04; these repos rebuild his fixes
+case "$OS_CODENAME" in
+    focal)  BP_REPO="php-focal-backports";  BP_RELEASE="Ubuntu 20.04"; BP_PHP="7.2–8.2"; BP_MM='^(7\.[2-4]|8\.[0-2])$' ;;
+    bionic) BP_REPO="php-bionic-backports"; BP_RELEASE="Ubuntu 18.04"; BP_PHP="8.1";     BP_MM='^8\.1$' ;;
+    *)      BP_REPO="" ;;
+esac
+BP_INSTALL=${BP_REPO:+"curl -fsSL https://raw.githubusercontent.com/wmfairuz/$BP_REPO/main/install.sh | sudo bash"}
 
 # Where a PHP build came from: path for panels/vendors, package version for apt
 php_source() {
@@ -71,6 +76,7 @@ php_source() {
     [ -z "$pkg" ] && { echo "custom"; return; }
     case "$pv" in
         *+pfb[0-9]*)               echo "pfb-repo" ;; # wmfairuz/php-focal-backports rebuilds
+        *+pbb[0-9]*)               echo "pbb-repo" ;; # wmfairuz/php-bionic-backports rebuilds
         *+php7.[0-9]*~*)           echo "Niek/php7" ;;
         *deb.sury.org*|*+0~[0-9]*) echo "Ondrej" ;;   # PPA (Ubuntu) / packages.sury.org (Debian)
         *ubuntu*)                  echo "Ubuntu" ;;
@@ -93,7 +99,9 @@ apt_update_age() {
 # Builds that keep an old upstream version but carry the fix — confirmed from
 # their changelogs on 2026-10-21. Anything >= these (same branch/source) is fixed.
 known_fixed_build() {
-    case "$1/$2" in
+    local src="$2"
+    case "$src" in pfb-repo|pbb-repo) src="Ondrej" ;; esac   # rebuilds of Ondrej's sources
+    case "$1/$src" in
         8.1/Ubuntu) echo "8.1.2-1ubuntu2.28" ;;        # 22.04 jammy-security
         8.3/Ubuntu) echo "8.3.6-0ubuntu0.24.04.13" ;;  # 24.04 noble-security
         8.5/Ubuntu) echo "8.5.4-0ubuntu1.5" ;;         # 26.04 resolute-security
@@ -231,10 +239,10 @@ do_upgrade() {
     local installed upgradable
     installed=$(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 'php*' 'lsphp*' 2>/dev/null | awk '$1=="ii"{print $2}')
     upgradable=$(apt list --upgradable 2>/dev/null | cut -d/ -f1 | grep -xF -f <(echo "$installed"))
-    if [ -z "$upgradable" ] && [ "$OS_CODENAME" = "focal" ]; then
-        echo -e "  ${YELLOW}No PHP updates available — and none will come from Ondrej's PPA on Ubuntu 20.04.${NC}"
-        echo "  Get the patched packages (one command, asks before changing anything):"
-        echo "    $PFB_INSTALL"
+    if [ -z "$upgradable" ] && [ -n "$BP_INSTALL" ]; then
+        echo -e "  ${YELLOW}No PHP updates available — and none will come from Ondrej's PPA on $BP_RELEASE.${NC}"
+        echo "  Get the patched PHP $BP_PHP packages (one command, asks before changing anything):"
+        echo "    $BP_INSTALL"
         echo
         return
     fi
@@ -263,7 +271,8 @@ CANDIDATES=$(
     ls /usr/bin/php[0-9]* /usr/sbin/php-fpm* /usr/bin/php-cgi* \
        /usr/local/bin/php /usr/local/sbin/php-fpm \
        /usr/local/lsws/lsphp*/bin/lsphp /usr/local/lsws/lsphp*/bin/php \
-       /opt/cpanel/ea-php*/root/usr/bin/php /opt/cpanel/ea-php*/root/usr/sbin/php-fpm \
+       /opt/cpanel/ea-php*/root/usr/bin/php /opt/cpanel/ea-php*/root/usr/bin/php-cgi \
+       /opt/cpanel/ea-php*/root/usr/sbin/php-fpm \
        /opt/plesk/php/*/bin/php /opt/plesk/php/*/sbin/php-fpm \
        /opt/remi/php*/root/usr/bin/php /opt/remi/php*/root/usr/sbin/php-fpm 2>/dev/null
 )
@@ -273,6 +282,8 @@ BINS=()
 for b in $CANDIDATES; do
     [ -x "$b" ] || continue
     real=$(readlink -f "$b" 2>/dev/null || echo "$b")
+    # cPanel's /usr/local/bin/php only dispatches to an ea-php build listed anyway
+    [ -d /opt/cpanel ] && [[ "$real" == /usr/local/bin/* ]] && continue
     [ -n "${SEEN[$real]:-}" ] && continue
     SEEN[$real]=1
     BINS+=("$real")
@@ -301,6 +312,12 @@ MODPHP=$(ls /etc/apache2/mods-enabled/php*.load /etc/httpd/conf.modules.d/*php*.
 [ -n "$FPM_PROCS" ] && SERVING+="fpm " && echo "$FPM_PROCS" | sed 's/^/    /'
 [ -n "$LS_PROCS" ]  && SERVING+="lsphp " && echo "$LS_PROCS" | sed 's/^/    /'
 [ -n "$MODPHP" ]    && SERVING+="mod_php " && echo "$MODPHP" | sed 's/^/    mod_php: /'
+# cPanel CGI/suPHP handlers start PHP per request, so there is no PHP process
+# to find — a running Apache is what serves it
+if [ -d /opt/cpanel ] && echo "$PROCS" | grep -qE '(^|/)(httpd|apache2)( |$)'; then
+    SERVING+="cpanel-httpd "
+    echo "    httpd (cPanel: CGI/suPHP handlers run PHP per request)"
+fi
 [ -z "$SERVING" ] && echo -e "  ${YELLOW}No running php-fpm / lsphp / mod_php found (CLI-only box?)${NC}"
 echo
 
@@ -317,10 +334,14 @@ for bin in "${BINS[@]}"; do
     MM=$(echo "$VER" | cut -d. -f1,2)
     UP=$("$bin" -i 2>/dev/null | grep -m1 '^session.upload_progress.enabled' | awk '{print $NF}')
 
-    # Distro backport? (Ubuntu/Debian/Ondrej changelog mentions the CVE)
+    # Backport? The package changelog names the CVE: Debian/Ubuntu (Ubuntu,
+    # Ondrej, pfb-repo, pbb-repo) or RPM (cPanel ea-php, CentOS/RHEL, Remi, CloudLinux)
     BACKPORT="no"
     CL="/usr/share/doc/php${MM}-common/changelog.Debian.gz"
     if [ -f "$CL" ] && zgrep -qE 'CVE-2026-10961[89]' "$CL" 2>/dev/null; then
+        BACKPORT="yes"
+    elif command -v rpm >/dev/null 2>&1 && owner=$(rpm -qf "$bin" 2>/dev/null) \
+         && rpm -q --changelog "$owner" 2>/dev/null | grep -qE 'CVE-2026-10961[89]'; then
         BACKPORT="yes"
     fi
 
@@ -436,10 +457,22 @@ if [ "$ANY_VULN" = "yes" ]; then
         [ "$NEXT" = "none" ] && NEXT="wait"
         echo -e "  ${YELLOW}•  No fix in apt yet${NC} for: ${!TODO_WAIT[*]}"
         AGE=$(apt_update_age)
-        if [ "$OS_CODENAME" = "focal" ]; then
-            echo "       Ubuntu 20.04: Ondrej's PPA no longer publishes here, so waiting won't help."
-            echo "       Get the patched packages (one command, asks before changing anything):"
-            echo "         $PFB_INSTALL"
+        if [ -n "$BP_INSTALL" ]; then
+            # Only point at the backports repo for the PHP versions it actually builds
+            BP_YES=""; BP_NO=""
+            for k in "${!TODO_WAIT[@]}"; do
+                mm=${k#php}; mm=${mm%% *}
+                if [[ "$mm" =~ $BP_MM ]]; then BP_YES+="$k "; else BP_NO+="$k "; fi
+            done
+            echo "       $BP_RELEASE: Ondrej's PPA no longer publishes here, so waiting won't help."
+            if [ -n "$BP_YES" ]; then
+                echo "       Get the patched PHP $BP_PHP packages for ${BP_YES% } (one command, asks first):"
+                echo "         $BP_INSTALL"
+            fi
+            if [ -n "$BP_NO" ]; then
+                echo "       ${BP_NO% }: not built by $BP_REPO (PHP $BP_PHP only). Move these sites"
+                echo "       to PHP $BP_PHP from there, or the server to a newer Ubuntu."
+            fi
         elif [ -z "$AGE" ] || [ "$AGE" -ge 1 ]; then
             echo "       apt was last updated ${AGE:-?}h ago — refresh first, then re-run this check:"
             echo "         sudo apt-get update -o Acquire::AllowReleaseInfoChange::Label=true"
