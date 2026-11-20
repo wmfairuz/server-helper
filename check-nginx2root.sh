@@ -217,7 +217,7 @@ command -v docker >/dev/null 2>&1 && [ "$IS_ROOT" = "yes" ] && \
     CTR_INFO=$(timeout 10 docker ps --no-trunc --format '{{.ID}} {{.Names}} {{.Image}}' 2>/dev/null)
 for p in /proc/[0-9]*; do
     pid=${p#/proc/}
-    cmd=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null) || continue
+    cmd=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline") || continue
     case "$cmd" in "nginx: master process"*|*"sw-cp-serverd: master"*) ;; *) continue ;; esac
     exe=$(readlink "$p/exe" 2>/dev/null)
     conf=$(echo "$cmd" | grep -oE '(^| )-c [^ ]+' | awk '{print $2}')
