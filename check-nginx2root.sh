@@ -169,7 +169,7 @@ conf_dump() {
 analyze_conf() {
     local d="$1" h2 h3 mailp res dyn sub
     local S='(^|[;{}])[[:space:]]*'           # start of a directive, also mid-line
-    EXP=""; EXP_NOTE=""
+    EXP=""; EXP_NOTE=""; OFF_NOTE=""
     h2=$(echo "$d" | grep -cE "${S}listen[[:space:]][^;]*[[:space:]]http2([[:space:]]|;)|${S}http2[[:space:]]+on[[:space:]]*;")
     h3=$(echo "$d" | grep -cE "${S}listen[[:space:]][^;]*[[:space:]]quic([[:space:]]|;)")
     mailp=$(echo "$d" | grep -cE "${S}mail[[:space:]]*\{")
@@ -189,6 +189,11 @@ analyze_conf() {
             EXP_NOTE+="resolver + variable *_pass, no subrequest directives seen [123634: lower risk]; "
         fi
     fi
+    # Say plainly which attack paths are off, so "no config line" is never ambiguous
+    [ "$h2" -eq 0 ] && OFF_NOTE+="HTTP/2, "
+    [ "$h3" -eq 0 ] && OFF_NOTE+="HTTP/3, "
+    [[ "$EXP" == *mail* ]] || OFF_NOTE+="mail proxy, "
+    [ "$res" -gt 0 ] && [ "$dyn" -gt 0 ] || OFF_NOTE+="resolver + variable *_pass, "
 }
 
 # ── 1. Find every nginx: files on disk + running masters (incl. containers) ──
@@ -536,8 +541,10 @@ for bin in "${BINS[@]}"; do
     [ "$BH2" = "no" ] && EXP=${EXP/http2 /}
     [ "$BH3" = "no" ] && EXP=${EXP/http3 /}
     if ! echo "$DUMP" | grep -q '[^[:space:]]'; then
-        EXP_NOTE="config not readable — exposure unknown"; EXP="unknown-config "
+        EXP_NOTE="config not readable — exposure unknown"; EXP="unknown-config "; OFF_NOTE=""
     fi
+    [ "$BH2" = "no" ] && OFF_NOTE=${OFF_NOTE/HTTP\/2, /HTTP\/2 (not in this build), }
+    [ "$BH3" = "no" ] && OFF_NOTE=${OFF_NOTE/HTTP\/3, /HTTP\/3 (not in this build), }
 
     RUNNING="not running"; [ -n "$pid" ] && RUNNING="running (pid ${pid})"
     [ -n "${STALE[$bin]:-}" ] && RUNNING="RUNNING A DELETED BINARY (pid ${pid}) — upgraded on disk, not restarted"
@@ -570,6 +577,7 @@ for bin in "${BINS[@]}"; do
     echo "      build: ${BUILD}   ${RUNNING}"
     [ -n "$PKG" ] && echo "      package: ${PKG} ${PKGVER}${HAVE:+  (changelog names: ${HAVE% })}"
     [ -n "$EXP_NOTE" ] && echo "      config: ${EXP_NOTE%; }"
+    [ -n "$OFF_NOTE" ] && echo "      off:    ${OFF_NOTE%, }"
     DETAILS+="${RAWVER}:${STATE%% *}:${SRC}:exp=$(echo "${EXP:-none}" | tr ' ' '+' | sed 's/+$//') "
 
     case "$STATE" in VULNERABLE*) ;; *) continue ;; esac
