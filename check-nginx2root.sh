@@ -682,15 +682,18 @@ if [ "$ANY_EXPOSED" = "yes" ] || [ "$ANY_LATENT" = "yes" ]; then
         fi
         case "$OS_CODENAME" in
             focal|bionic)
-                echo "       Ubuntu ${OS_CODENAME}: fixes come only via Ubuntu Pro (esm-infra); none published yet."
+                [ "$OS_CODENAME" = "focal" ] && fixv="1.18.0-0ubuntu1.7+esm5" || fixv="1.14.0-0ubuntu1.11+esm6"
+                echo "       Ubuntu ${OS_CODENAME}: fixed in ${fixv}+, published only via Ubuntu Pro (esm-infra)."
                 [ "$OS_CODENAME" = "focal" ] && last="1.28.0" || last="1.24.0"
                 echo "       nginx.org stopped building for ${OS_CODENAME} (last: ${last}), so it won't help either."
                 command -v pro >/dev/null 2>&1 && ! pro status 2>/dev/null | grep -qE '^esm-infra +yes +enabled' \
                     && echo "       esm-infra is NOT enabled here: sudo pro attach <token>  (then re-run)" ;;
             jammy|noble|resolute)
-                echo "       Ubuntu hadn't published fixed nginx packages yet (tracker, 2026-11-18)."
-                echo "       nginx.org's repo already has ${FIX_1_30} / ${FIX_1_31} for ${OS_CODENAME} — switching is"
-                echo "       an option, but its packages lay out /etc/nginx differently; test first." ;;
+                case "$OS_CODENAME" in jammy) fixv="1.18.0-6ubuntu14.23" ;; noble) fixv="1.24.0-2ubuntu7.20" ;;
+                                       *) fixv="1.28.3-2ubuntu1.13" ;; esac
+                echo "       Ubuntu fixed it in ${fixv}+ (USN-9159-1, 2026-11-19) — your apt"
+                echo "       mirror may not have it yet. Refresh apt; if it's still missing, check the mirror."
+                echo "       (nginx.org's repo also has ${FIX_1_30} / ${FIX_1_31}, but lays out /etc/nginx differently.)" ;;
         esac
         if command -v apt-get >/dev/null 2>&1; then
             AGE=$(apt_update_age)
