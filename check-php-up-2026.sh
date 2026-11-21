@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 #
-# "PHP-UP" checker: CVE-2026-109618 / CVE-2026-109619 (PHP session upload-progress RCE)
+# PHP security checker for the 2026 critical rounds:
+#   October  "PHP-UP": CVE-2026-109618 / CVE-2026-109619 (session upload-progress RCE)
+#   November: CVE-2026-129289 (FPM request smuggling via FastCGI connection reuse),
+#             CVE-2026-129474 (PHP 8.5 without php.ini), CVE-2026-115560 (session
+#             serializer mismatch) and 15 more
 #
 # Usage:
 #   sudo ./check-php-up-2026.sh              # check only — makes no changes; reports where each
 #                                            # PHP came from and whether apt already has the fix
-#   sudo ./check-php-up-2026.sh --mitigate   # stopgap: session.upload_progress.enabled=Off, reload PHP
+#   sudo ./check-php-up-2026.sh --mitigate   # stopgap ini settings for every web SAPI, restart PHP
 #   sudo ./check-php-up-2026.sh --unmitigate # remove the stopgap again
 #   sudo ./check-php-up-2026.sh --upgrade    # apt-upgrade installed PHP packages, restart PHP
 #   Add -y to skip the confirmation prompt.
 # Every mode re-runs the check afterwards.
 #
-# Fixed upstream on 2026-10-21 in PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12, so every
-# release up to the ones below is vulnerable. PHP <= 8.1 has no upstream fix; only
-# distro/vendor backports (detected via the package changelog) count as patched.
+# Fixed upstream on 2026-11-19 in PHP 8.2.36 / 8.3.37 / 8.4.28 / 8.5.13 (October's
+# fixes came a month earlier in the previous releases), so every release up to the
+# ones below is vulnerable. PHP <= 8.1 has no upstream fix; only distro/vendor
+# backports (detected via the package changelog) count as patched.
 #
 # Last line of output is machine-readable, for collecting results across servers:
 #   RESULT|<host>|<status>|<details>
@@ -21,11 +26,16 @@
 #
 set -u
 
-CVES="CVE-2026-109618 CVE-2026-109619"
-LAST_VULN_8_2="${LAST_VULN_8_2:-8.2.34}"
-LAST_VULN_8_3="${LAST_VULN_8_3:-8.3.35}"
-LAST_VULN_8_4="${LAST_VULN_8_4:-8.4.26}"
-LAST_VULN_8_5="${LAST_VULN_8_5:-8.5.11}"
+CVES="Oct + Nov 2026"
+# Last releases without November's fixes; October's are one release earlier
+LAST_VULN_8_2="${LAST_VULN_8_2:-8.2.35}"
+LAST_VULN_8_3="${LAST_VULN_8_3:-8.3.36}"
+LAST_VULN_8_4="${LAST_VULN_8_4:-8.4.27}"
+LAST_VULN_8_5="${LAST_VULN_8_5:-8.5.12}"
+# A backport's changelog names these: every November build (Sury, Ubuntu, our
+# rebuilds) lists CVE-2026-129289; October-only builds list just 10961[89]
+NOV_CVE_RE='CVE-2026-129289'
+OCT_CVE_RE='CVE-2026-10961[89]'
 
 DROPIN="99-php-up-mitigation.ini"
 
@@ -49,7 +59,7 @@ if [ "$ACTION" != "check" ] && [ "$(id -u)" -ne 0 ]; then
     exit 2
 fi
 
-echo -e "${BOLD}=== PHP-UP (${CVES}) checker — ${HOST} — $(date '+%Y-%m-%d %H:%M') ===${NC}\n"
+echo -e "${BOLD}=== PHP security (${CVES}) checker — ${HOST} — $(date '+%Y-%m-%d %H:%M') ===${NC}\n"
 
 # a <= b, version-wise
 ver_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
@@ -78,7 +88,7 @@ php_source() {
         *+pfb[0-9]*)               echo "pfb-repo" ;; # wmfairuz/php-focal-backports rebuilds
         *+pbb[0-9]*)               echo "pbb-repo" ;; # wmfairuz/php-bionic-backports rebuilds
         *+php7.[0-9]*~*)           echo "Niek/php7" ;;
-        *deb.sury.org*|*+0~[0-9]*) echo "Ondrej" ;;   # PPA (Ubuntu) / packages.sury.org (Debian)
+        *deb.sury.org*|*+0~[0-9]*|*debsuryorg*) echo "Ondrej" ;;   # PPA (Ubuntu) / packages.sury.org (Debian)
         *ubuntu*)                  echo "Ubuntu" ;;
         *)                         echo "$OS_NAME" ;;
     esac
@@ -96,23 +106,24 @@ apt_update_age() {
 }
 
 # Does the apt candidate of php<MM>-common name the CVEs in its changelog?
-# Builds that keep an old upstream version but carry the fix — confirmed from
-# their changelogs on 2026-10-21. Anything >= these (same branch/source) is fixed.
+# Builds that keep an old upstream version but carry November's fixes —
+# confirmed from their changelogs on 2026-11-21. Anything >= these (same
+# branch/source) is fixed.
 known_fixed_build() {
     local src="$2"
     case "$src" in pfb-repo|pbb-repo) src="Ondrej" ;; esac   # rebuilds of Ondrej's sources
     case "$1/$src" in
-        8.1/Ubuntu) echo "8.1.2-1ubuntu2.28" ;;        # 22.04 jammy-security
-        8.3/Ubuntu) echo "8.3.6-0ubuntu0.24.04.13" ;;  # 24.04 noble-security
-        8.5/Ubuntu) echo "8.5.4-0ubuntu1.5" ;;         # 26.04 resolute-security
-        8.1/Ondrej) echo "8.1.34-9" ;;                 # backport from 8.2.35
-        8.0/Ondrej) echo "1:8.0.30-25" ;;              # backport from 8.2.35
-        7.4/Ondrej) echo "1:7.4.33-31" ;;              # backport from 8.2.35
-        7.3/Ondrej) echo "7.3.33-35" ;;                # backport from 8.2.35
-        7.2/Ondrej) echo "7.2.34-66" ;;                # backport from 8.2.35
-        7.1/Ondrej) echo "7.1.33-80" ;;                # backport from 8.2.35
-        7.0/Ondrej) echo "7.0.33-92" ;;                # backport from 8.2.35
-        5.6/Ondrej) echo "5.6.40-104" ;;               # backport from 8.2.35
+        8.1/Ubuntu) echo "8.1.2-1ubuntu2.29" ;;        # 22.04 jammy-security
+        8.3/Ubuntu) echo "8.3.6-0ubuntu0.24.04.14" ;;  # 24.04 noble-security
+        8.5/Ubuntu) echo "8.5.4-0ubuntu1.6" ;;         # 26.04 resolute-security
+        8.1/Ondrej) echo "8.1.34-13" ;;                # backport from 8.2.36
+        8.0/Ondrej) echo "1:8.0.30-30" ;;              # backport from 8.2.36
+        7.4/Ondrej) echo "1:7.4.33-36" ;;              # backport from 8.2.36
+        7.3/Ondrej) echo "7.3.33-40" ;;                # backport from 8.2.36
+        7.2/Ondrej) echo "7.2.34-69" ;;                # backport from 8.2.36
+        7.1/Ondrej) echo "7.1.33-84" ;;                # backport from 8.2.36
+        7.0/Ondrej) echo "7.0.33-96" ;;                # backport from 8.2.36
+        5.6/Ondrej) echo "5.6.40-108" ;;               # backport from 8.2.36
     esac
 }
 
@@ -126,7 +137,7 @@ candidate_has_fix() {
         # changelogs.ubuntu.com often lags new security uploads by hours.
         if ! out=$(timeout 25 apt-get changelog "php${mm}-common" 2>/dev/null); then
             CL_CACHE[$mm]="unknown"
-        elif echo "$out" | grep -qE 'CVE-2026-10961[89]'; then CL_CACHE[$mm]="yes"
+        elif echo "$out" | grep -qE "$NOV_CVE_RE"; then CL_CACHE[$mm]="yes"
         else CL_CACHE[$mm]="no"
         fi
     fi
@@ -177,7 +188,7 @@ ini_scan_dirs() {
 }
 
 do_mitigate() {
-    echo -e "${BOLD}--- Applying stopgap: session.upload_progress.enabled = Off ---${NC}"
+    echo -e "${BOLD}--- Applying stopgap: upload progress off, exception args hidden ---${NC}"
     local dirs d bin
     dirs=$(ini_scan_dirs)
     if [ -z "$dirs" ]; then
@@ -187,12 +198,13 @@ do_mitigate() {
     echo "  Will write ${DROPIN} into:"; echo "$dirs" | sed 's/^/    /'
     confirm "  Proceed?" || { echo "  Skipped."; echo; return; }
     for d in $dirs; do
-        # Per the php.net advisory (CVE-2026-109619). fatal_error_backtraces only exists
-        # on PHP 8.5+; older versions silently ignore it.
+        # Per the php.net advisories (CVE-2026-109619 in October, the November round).
+        # fatal_error_backtraces only exists on PHP 8.5+; older versions silently ignore it.
         printf '%s\n' \
-            "; PHP-UP stopgap (${CVES}) — remove once PHP is patched:" \
+            "; PHP security stopgap (${CVES}) — remove once PHP is patched:" \
             ";   sudo $(readlink -f "$0") --unmitigate" \
             "session.upload_progress.enabled = Off" \
+            "zend.exception_ignore_args = On" \
             "fatal_error_backtraces = Off" > "$d/$DROPIN"
         echo -e "  ${GREEN}wrote $d/$DROPIN${NC}"
     done
@@ -203,9 +215,10 @@ do_mitigate() {
     done
     # Advisory says restart every worker — a reload is not enough
     bounce_php restart
-    echo -e "  ${YELLOW}Note: this only reduces exposure to CVE-2026-109619. CVE-2026-109618 stays open"
-    echo -e "  until PHP is upgraded (php.net's other stopgaps — memory_limit=-1, low post_max_size —"
-    echo -e "  can break apps, so they are not applied here).${NC}\n"
+    echo -e "  ${YELLOW}Note: this only reduces exposure (CVE-2026-109619, CVE-2026-115560 and others);"
+    echo -e "  the rest stay open until PHP is upgraded. Web-server and FPM-pool stopgaps (FastCGI"
+    echo -e "  connection reuse, catch_workers_output) are listed under 'November risk factors' —"
+    echo -e "  change those by hand. Upload progress bars stop updating while this is on.${NC}\n"
 }
 
 do_unmitigate() {
@@ -248,7 +261,7 @@ do_upgrade() {
     fi
     if [ -z "$upgradable" ]; then
         echo -e "  ${YELLOW}No PHP updates available from your apt sources yet.${NC}"
-        echo "  Upstream fixed 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 on 2026-10-21; distro and Ondrej"
+        echo "  Upstream fixed 8.2.36 / 8.3.37 / 8.4.28 / 8.5.13 on 2026-11-19; distro and Ondrej"
         echo "  builds can lag by hours. Re-run --upgrade later."
         echo "  Until then consider: sudo $(readlink -f "$0") --mitigate"
         echo
@@ -334,15 +347,18 @@ for bin in "${BINS[@]}"; do
     MM=$(echo "$VER" | cut -d. -f1,2)
     UP=$("$bin" -i 2>/dev/null | grep -m1 '^session.upload_progress.enabled' | awk '{print $NF}')
 
-    # Backport? The package changelog names the CVE: Debian/Ubuntu (Ubuntu,
-    # Ondrej, pfb-repo, pbb-repo) or RPM (cPanel ea-php, CentOS/RHEL, Remi, CloudLinux)
-    BACKPORT="no"
+    # Backport? The package changelog names the CVEs: Debian/Ubuntu (Ubuntu,
+    # Ondrej, pfb-repo, pbb-repo) or RPM (cPanel ea-php, CentOS/RHEL, Remi, CloudLinux).
+    # BACKPORT = nov (has November's fixes), oct (October's only) or no
+    BACKPORT="no"; CLTXT=""
     CL="/usr/share/doc/php${MM}-common/changelog.Debian.gz"
-    if [ -f "$CL" ] && zgrep -qE 'CVE-2026-10961[89]' "$CL" 2>/dev/null; then
-        BACKPORT="yes"
-    elif command -v rpm >/dev/null 2>&1 && owner=$(rpm -qf "$bin" 2>/dev/null) \
-         && rpm -q --changelog "$owner" 2>/dev/null | grep -qE 'CVE-2026-10961[89]'; then
-        BACKPORT="yes"
+    if [ -f "$CL" ]; then
+        CLTXT=$(zcat "$CL" 2>/dev/null)
+    elif command -v rpm >/dev/null 2>&1 && owner=$(rpm -qf "$bin" 2>/dev/null); then
+        CLTXT=$(rpm -q --changelog "$owner" 2>/dev/null)
+    fi
+    if grep -qE "$NOV_CVE_RE" <<<"$CLTXT"; then BACKPORT="nov"
+    elif grep -qE "$OCT_CVE_RE" <<<"$CLTXT"; then BACKPORT="oct"
     fi
 
     case "$MM" in
@@ -355,8 +371,11 @@ for bin in "${BINS[@]}"; do
 
     if [ -n "$LAST" ] && ! ver_le "$VER" "$LAST"; then
         STATE="PATCHED (upstream fix)"; COLOR="$GREEN"
-    elif [ "$BACKPORT" = "yes" ]; then
+    elif [ "$BACKPORT" = "nov" ]; then
         STATE="PATCHED (distro backport)"; COLOR="$GREEN"
+    elif [ "$BACKPORT" = "oct" ] || { [ -n "$LAST" ] && [ "$VER" = "$LAST" ]; }; then
+        # e.g. 8.2.35, or Ondrej's 8.1.34-9: has October's fix, not November's
+        STATE="VULNERABLE — October fix only, November's missing"; COLOR="$RED"; ANY_VULN="yes"
     elif [ -n "$LAST" ]; then
         STATE="VULNERABLE (<= $LAST)"; COLOR="$RED"; ANY_VULN="yes"
     elif ver_le "$MM" "8.1"; then
@@ -391,7 +410,7 @@ for bin in "${BINS[@]}"; do
     elif [ "$CAND" != "(none)" ] && dpkg --compare-versions "$CAND" gt "$PKGVER"; then
         CUP=$(echo "$CAND" | sed 's/^[0-9]*://' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
         if [ -n "$LAST" ] && ! ver_le "$CUP" "$LAST"; then
-            FIXED="yes"                         # newer upstream release, e.g. 8.3.36
+            FIXED="yes"                         # newer upstream release, e.g. 8.3.37
         else
             KNOWN=$(known_fixed_build "$MM" "$SRC")   # same/old upstream: only a backport helps
             if [ -n "$KNOWN" ]; then
@@ -430,7 +449,55 @@ WEBOVR=$(find /var/www /home /srv -maxdepth 5 \( -name .user.ini -o -name .htacc
 [ -z "$OVR$WEBOVR" ] && echo "  None — every build uses its php.ini default (shown above)."
 echo
 
-# ── 5. Verdict ────────────────────────────────────────────────────────
+# ── 5. November risk factors: setups that make the new bugs easy to hit ─
+echo -e "${BOLD}--- November risk factors ---${NC}"
+RISKS=""
+# CVE-2026-129289: one request can run code when the web server reuses FastCGI
+# connections. Both settings are off by default.
+KEEPCONN=$(grep -rsnE '^[^#]*fastcgi_keep_conn[[:space:]]+on' \
+        /etc/nginx /usr/local/nginx/conf /usr/local/openresty/nginx/conf 2>/dev/null)
+REUSE=$(grep -rsniE '^[^#]*enablereuse=on' /etc/apache2 /etc/httpd /usr/local/apache/conf 2>/dev/null)
+if [ -n "$KEEPCONN$REUSE" ]; then
+    RISKS+="fcgi-reuse "
+    echo -e "  ${RED}FastCGI connection reuse is ON (CVE-2026-129289: single-request RCE):${NC}"
+    echo "$KEEPCONN$REUSE" | sed '/^$/d; s/^/    /'
+    echo "    → set 'fastcgi_keep_conn off;' (nginx) / remove 'enablereuse=on' (Apache), reload the web server"
+fi
+# CVE-2026-129474: PHP 8.5 with no php.ini at all (official Docker images ship without one)
+NOINI=""
+for bin in "${BINS[@]}"; do
+    "$bin" -v 2>/dev/null | head -1 | grep -qE '^PHP 8\.5\.' || continue
+    "$bin" -i 2>/dev/null | grep -m1 'Loaded Configuration File' | grep -q '(none)' && NOINI+="$bin "
+done
+if [ -n "$NOINI" ]; then
+    RISKS+="no-php-ini "
+    echo -e "  ${RED}PHP 8.5 running without a php.ini (CVE-2026-129474):${NC} ${NOINI% }"
+    echo "    → install php.ini-production as php.ini (Docker: cp \"\$PHP_INI_DIR/php.ini-production\" \"\$PHP_INI_DIR/php.ini\")"
+fi
+# php.net's stopgap: catch_workers_output=no (the official php-fpm images turn it on)
+CATCHOUT=$(grep -rsnE '^[[:space:]]*catch_workers_output[[:space:]]*=[[:space:]]*(yes|on|true|1)' \
+        /etc/php/*/fpm /etc/php-fpm.conf /etc/php-fpm.d /usr/local/etc/php-fpm.conf /usr/local/etc/php-fpm.d \
+        /opt/cpanel/ea-php*/root/etc/php-fpm.d /etc/opt/remi/php*/php-fpm.d 2>/dev/null)
+if [ -n "$CATCHOUT" ]; then
+    RISKS+="catch-workers-output "
+    echo -e "  ${YELLOW}catch_workers_output is on in these FPM pools:${NC}"
+    echo "$CATCHOUT" | sed 's/^/    /'
+    echo "    → until patched, set 'catch_workers_output = no' and restart PHP-FPM"
+fi
+# CVE-2026-115560: apps sharing one session store with different serializers
+SERIAL=$(grep -rsnE 'session\.serialize_handler' \
+        /etc/php /etc/php-fpm.d /etc/opt/remi /opt/cpanel/ea-php*/root/etc /usr/local/etc 2>/dev/null \
+        | grep -vE ':\s*;' | grep -viE '=\s*php\s*$')
+if [ -n "$SERIAL" ]; then
+    RISKS+="mixed-serializers "
+    echo -e "  ${YELLOW}session.serialize_handler is changed here (CVE-2026-115560 if apps share a session store):${NC}"
+    echo "$SERIAL" | sed 's/^/    /'
+    echo "    → give each app its own session.save_path, or one serializer everywhere"
+fi
+[ -z "$RISKS" ] && echo "  None found: no FastCGI reuse, no 8.5 without php.ini, no catch_workers_output, no serializer changes."
+echo
+
+# ── 6. Verdict ────────────────────────────────────────────────────────
 echo -e "${BOLD}=== VERDICT ===${NC}"
 SELF=$(readlink -f "$0")
 NEXT="none"
@@ -490,9 +557,10 @@ if [ "$ANY_VULN" = "yes" ]; then
         if [ -n "$OVR" ] && echo "$OVR" | grep -q "$DROPIN"; then
             echo -e "  •  Stopgap ${GREEN}already applied${NC} (${DROPIN}) — keep it until the verdict says PATCHED."
         else
-            echo "  •  Until upgraded, apply the stopgap (partial protection, CVE-2026-109619 only):"
+            echo "  •  Until upgraded, apply the stopgap (partial protection only):"
             echo "       sudo $SELF --mitigate"
         fi
+        [ -n "$RISKS" ] && echo -e "  ${RED}•  Fix the November risk factors above first${NC} (${RISKS% }) — they make these bugs easy to hit."
     fi
     RC=1
 elif [ "$ANY_UNKNOWN" = "yes" ]; then
@@ -509,5 +577,5 @@ else
 fi
 echo
 echo "Authoritative status: https://www.php.net/archive/2026.php"
-echo "RESULT|${HOST}|${STATUS}|next=${NEXT} serving=${SERVING:-none} ${DETAILS% }"
+echo "RESULT|${HOST}|${STATUS}|next=${NEXT} serving=$(echo ${SERVING:-none} | tr " " ,) risks=$(echo ${RISKS:-none} | tr ' ' ,) ${DETAILS% }"
 exit $RC
